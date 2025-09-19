@@ -8,6 +8,16 @@
 #include "pytorch_cuda_helper.hpp"
 #endif
 
+#define MUSA_2D_KERNEL_LOOP(i, n, j, m)                             \
+  for (size_t i = blockIdx.x * blockDim.x + threadIdx.x; i < (n);   \
+       i += blockDim.x * gridDim.x)                                 \
+    for (size_t j = blockIdx.y * blockDim.y + threadIdx.y; j < (m); \
+         j += blockDim.y * gridDim.y)
+
+#define MUSA_2D_KERNEL_BLOCK_LOOP(i, n, j, m)          \
+  for (size_t i = blockIdx.x; i < (n); i += gridDim.x) \
+    for (size_t j = blockIdx.y; j < (m); j += gridDim.y)
+
 const int THREADS_PER_BLOCK_IOU3D = 16;
 const int THREADS_PER_BLOCK_NMS = sizeof(unsigned long long) * 8;
 __device__ const float EPS = 1e-8;
@@ -115,17 +125,21 @@ __device__ inline int point_cmp(const Point &a, const Point &b,
          atan2(b.y - center.y, b.x - center.x);
 }
 
+
 __device__ inline float box_overlap(const float *box_a, const float *box_b) {
-  // params: box_a (5) [x1, y1, x2, y2, angle]
-  // params: box_b (5) [x1, y1, x2, y2, angle]
+  // params box_a: [x, y, z, dx, dy, dz, heading]
+  // params box_b: [x, y, z, dx, dy, dz, heading]
 
-  float a_x1 = box_a[0], a_y1 = box_a[1], a_x2 = box_a[2], a_y2 = box_a[3],
-        a_angle = box_a[4];
-  float b_x1 = box_b[0], b_y1 = box_b[1], b_x2 = box_b[2], b_y2 = box_b[3],
-        b_angle = box_b[4];
+  float a_angle = box_a[6], b_angle = box_b[6];
+  float a_dx_half = box_a[3] / 2, b_dx_half = box_b[3] / 2,
+        a_dy_half = box_a[4] / 2, b_dy_half = box_b[4] / 2;
+  float a_x1 = box_a[0] - a_dx_half, a_y1 = box_a[1] - a_dy_half;
+  float a_x2 = box_a[0] + a_dx_half, a_y2 = box_a[1] + a_dy_half;
+  float b_x1 = box_b[0] - b_dx_half, b_y1 = box_b[1] - b_dy_half;
+  float b_x2 = box_b[0] + b_dx_half, b_y2 = box_b[1] + b_dy_half;
 
-  Point center_a((a_x1 + a_x2) / 2, (a_y1 + a_y2) / 2);
-  Point center_b((b_x1 + b_x2) / 2, (b_y1 + b_y2) / 2);
+  Point center_a(box_a[0], box_a[1]);
+  Point center_b(box_b[0], box_b[1]);
 
   Point box_a_corners[5];
   box_a_corners[0].set(a_x1, a_y1);
@@ -208,29 +222,132 @@ __device__ inline float box_overlap(const float *box_a, const float *box_b) {
   return fabs(area) / 2.0;
 }
 
+// __device__ inline float box_overlap(const float *box_a, const float *box_b) {
+//   // params: box_a (5) [x1, y1, x2, y2, angle]
+//   // params: box_b (5) [x1, y1, x2, y2, angle]
+
+//   float a_x1 = box_a[0], a_y1 = box_a[1], a_x2 = box_a[2], a_y2 = box_a[3],
+//         a_angle = box_a[4];
+//   float b_x1 = box_b[0], b_y1 = box_b[1], b_x2 = box_b[2], b_y2 = box_b[3],
+//         b_angle = box_b[4];
+
+//   Point center_a((a_x1 + a_x2) / 2, (a_y1 + a_y2) / 2);
+//   Point center_b((b_x1 + b_x2) / 2, (b_y1 + b_y2) / 2);
+
+//   Point box_a_corners[5];
+//   box_a_corners[0].set(a_x1, a_y1);
+//   box_a_corners[1].set(a_x2, a_y1);
+//   box_a_corners[2].set(a_x2, a_y2);
+//   box_a_corners[3].set(a_x1, a_y2);
+
+//   Point box_b_corners[5];
+//   box_b_corners[0].set(b_x1, b_y1);
+//   box_b_corners[1].set(b_x2, b_y1);
+//   box_b_corners[2].set(b_x2, b_y2);
+//   box_b_corners[3].set(b_x1, b_y2);
+
+//   // get oriented corners
+//   float a_angle_cos = cos(a_angle), a_angle_sin = sin(a_angle);
+//   float b_angle_cos = cos(b_angle), b_angle_sin = sin(b_angle);
+
+//   for (int k = 0; k < 4; k++) {
+//     rotate_around_center(center_a, a_angle_cos, a_angle_sin, box_a_corners[k]);
+//     rotate_around_center(center_b, b_angle_cos, b_angle_sin, box_b_corners[k]);
+//   }
+
+//   box_a_corners[4] = box_a_corners[0];
+//   box_b_corners[4] = box_b_corners[0];
+
+//   // get intersection of lines
+//   Point cross_points[16];
+//   Point poly_center;
+//   int cnt = 0, flag = 0;
+
+//   poly_center.set(0, 0);
+//   for (int i = 0; i < 4; i++) {
+//     for (int j = 0; j < 4; j++) {
+//       flag = intersection(box_a_corners[i + 1], box_a_corners[i],
+//                           box_b_corners[j + 1], box_b_corners[j],
+//                           cross_points[cnt]);
+//       if (flag) {
+//         poly_center = poly_center + cross_points[cnt];
+//         cnt++;
+//       }
+//     }
+//   }
+
+//   // check corners
+//   for (int k = 0; k < 4; k++) {
+//     if (check_in_box2d(box_a, box_b_corners[k])) {
+//       poly_center = poly_center + box_b_corners[k];
+//       cross_points[cnt] = box_b_corners[k];
+//       cnt++;
+//     }
+//     if (check_in_box2d(box_b, box_a_corners[k])) {
+//       poly_center = poly_center + box_a_corners[k];
+//       cross_points[cnt] = box_a_corners[k];
+//       cnt++;
+//     }
+//   }
+
+//   poly_center.x /= cnt;
+//   poly_center.y /= cnt;
+
+//   // sort the points of polygon
+//   Point temp;
+//   for (int j = 0; j < cnt - 1; j++) {
+//     for (int i = 0; i < cnt - j - 1; i++) {
+//       if (point_cmp(cross_points[i], cross_points[i + 1], poly_center)) {
+//         temp = cross_points[i];
+//         cross_points[i] = cross_points[i + 1];
+//         cross_points[i + 1] = temp;
+//       }
+//     }
+//   }
+
+//   // get the overlap areas
+//   float area = 0;
+//   for (int k = 0; k < cnt - 1; k++) {
+//     area += cross(cross_points[k] - cross_points[0],
+//                   cross_points[k + 1] - cross_points[0]);
+//   }
+
+//   return fabs(area) / 2.0;
+// }
+
 __device__ inline float iou_bev(const float *box_a, const float *box_b) {
-  // params: box_a (5) [x1, y1, x2, y2, angle]
-  // params: box_b (5) [x1, y1, x2, y2, angle]
-  float sa = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1]);
-  float sb = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1]);
+  // params box_a: [x, y, z, dx, dy, dz, heading]
+  // params box_b: [x, y, z, dx, dy, dz, heading]
+  float sa = box_a[3] * box_a[4];
+  float sb = box_b[3] * box_b[4];
   float s_overlap = box_overlap(box_a, box_b);
   return s_overlap / fmaxf(sa + sb - s_overlap, EPS);
 }
 
-__global__ void iou3d_boxes_overlap_bev_forward_cuda_kernel(
-    const int num_a, const float *boxes_a, const int num_b,
-    const float *boxes_b, float *ans_overlap) {
-  const int a_idx = blockIdx.y * THREADS_PER_BLOCK + threadIdx.y;
-  const int b_idx = blockIdx.x * THREADS_PER_BLOCK + threadIdx.x;
 
-  if (a_idx >= num_a || b_idx >= num_b) {
-    return;
-  }
-  const float *cur_box_a = boxes_a + a_idx * 5;
-  const float *cur_box_b = boxes_b + b_idx * 5;
-  float s_overlap = box_overlap(cur_box_a, cur_box_b);
-  ans_overlap[a_idx * num_b + b_idx] = s_overlap;
-}
+// __device__ inline float iou_bev(const float *box_a, const float *box_b) {
+//   // params: box_a (5) [x1, y1, x2, y2, angle]
+//   // params: box_b (5) [x1, y1, x2, y2, angle]
+//   float sa = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1]);
+//   float sb = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1]);
+//   float s_overlap = box_overlap(box_a, box_b);
+//   return s_overlap / fmaxf(sa + sb - s_overlap, EPS);
+// }
+
+// __global__ void iou3d_boxes_overlap_bev_forward_cuda_kernel(
+//     const int num_a, const float *boxes_a, const int num_b,
+//     const float *boxes_b, float *ans_overlap) {
+//   const int a_idx = blockIdx.y * THREADS_PER_BLOCK + threadIdx.y;
+//   const int b_idx = blockIdx.x * THREADS_PER_BLOCK + threadIdx.x;
+
+//   if (a_idx >= num_a || b_idx >= num_b) {
+//     return;
+//   }
+//   const float *cur_box_a = boxes_a + a_idx * 5;
+//   const float *cur_box_b = boxes_b + b_idx * 5;
+//   float s_overlap = box_overlap(cur_box_a, cur_box_b);
+//   ans_overlap[a_idx * num_b + b_idx] = s_overlap;
+// }
 
 __global__ void iou3d_boxes_iou_bev_forward_cuda_kernel(const int num_a,
                                                         const float *boxes_a,
@@ -304,14 +421,29 @@ __global__ void nms_forward_cuda_kernel(const int boxes_num,
 }
 
 __device__ inline float iou_normal(float const *const a, float const *const b) {
-  float left = fmaxf(a[0], b[0]), right = fminf(a[2], b[2]);
-  float top = fmaxf(a[1], b[1]), bottom = fminf(a[3], b[3]);
+  // params: a: [x, y, z, dx, dy, dz, heading]
+  // params: b: [x, y, z, dx, dy, dz, heading]
+
+  float left = fmaxf(a[0] - a[3] / 2, b[0] - b[3] / 2),
+        right = fminf(a[0] + a[3] / 2, b[0] + b[3] / 2);
+  float top = fmaxf(a[1] - a[4] / 2, b[1] - b[4] / 2),
+        bottom = fminf(a[1] + a[4] / 2, b[1] + b[4] / 2);
   float width = fmaxf(right - left, 0.f), height = fmaxf(bottom - top, 0.f);
   float interS = width * height;
-  float Sa = (a[2] - a[0]) * (a[3] - a[1]);
-  float Sb = (b[2] - b[0]) * (b[3] - b[1]);
+  float Sa = a[3] * a[4];
+  float Sb = b[3] * b[4];
   return interS / fmaxf(Sa + Sb - interS, EPS);
 }
+
+// __device__ inline float iou_normal(float const *const a, float const *const b) {
+//   float left = fmaxf(a[0], b[0]), right = fminf(a[2], b[2]);
+//   float top = fmaxf(a[1], b[1]), bottom = fminf(a[3], b[3]);
+//   float width = fmaxf(right - left, 0.f), height = fmaxf(bottom - top, 0.f);
+//   float interS = width * height;
+//   float Sa = (a[2] - a[0]) * (a[3] - a[1]);
+//   float Sb = (b[2] - b[0]) * (b[3] - b[1]);
+//   return interS / fmaxf(Sa + Sb - interS, EPS);
+// }
 
 __global__ void nms_normal_forward_cuda_kernel(const int boxes_num,
                                                const float nms_overlap_thresh,
@@ -363,6 +495,140 @@ __global__ void nms_normal_forward_cuda_kernel(const int boxes_num,
     }
     const int col_blocks = DIVUP(boxes_num, THREADS_PER_BLOCK_NMS);
     mask[cur_box_idx * col_blocks + col_start] = t;
+  }
+}
+
+
+__global__ void iou3d_boxes_overlap_bev_forward_cuda_kernel(
+    const int num_a, const float *boxes_a, const int num_b,
+    const float *boxes_b, float *ans_overlap) {
+  // params boxes_a: (N, 7) [x, y, z, dx, dy, dz, heading]
+  // params boxes_b: (M, 7) [x, y, z, dx, dy, dz, heading]
+  MUSA_2D_KERNEL_LOOP(b_idx, num_b, a_idx, num_a) {
+    if (a_idx >= num_a || b_idx >= num_b) {
+      return;
+    }
+
+    const float *cur_box_a = boxes_a + a_idx * 7;
+    const float *cur_box_b = boxes_b + b_idx * 7;
+    float cur_overlap = box_overlap(cur_box_a, cur_box_b);
+    ans_overlap[a_idx * num_b + b_idx] = cur_overlap;
+  }
+}
+
+__global__ void iou3d_nms3d_forward_cuda_kernel(const int boxes_num,
+                                                const float nms_overlap_thresh,
+                                                const float *boxes,
+                                                unsigned long long *mask) {
+  // params: boxes (N, 7) [x, y, z, dx, dy, dz, heading]
+  // params: mask (N, N/THREADS_PER_BLOCK_NMS)
+  const int blocks =
+      (boxes_num + THREADS_PER_BLOCK_NMS - 1) / THREADS_PER_BLOCK_NMS;
+  MUSA_2D_KERNEL_BLOCK_LOOP(col_start, blocks, row_start, blocks) {
+    // if (row_start > col_start) return;
+
+    const int row_size = fminf(boxes_num - row_start * THREADS_PER_BLOCK_NMS,
+                               THREADS_PER_BLOCK_NMS);
+    const int col_size = fminf(boxes_num - col_start * THREADS_PER_BLOCK_NMS,
+                               THREADS_PER_BLOCK_NMS);
+
+    __shared__ float block_boxes[THREADS_PER_BLOCK_NMS * 7];
+
+    if (threadIdx.x < col_size) {
+      block_boxes[threadIdx.x * 7 + 0] =
+          boxes[(THREADS_PER_BLOCK_NMS * col_start + threadIdx.x) * 7 + 0];
+      block_boxes[threadIdx.x * 7 + 1] =
+          boxes[(THREADS_PER_BLOCK_NMS * col_start + threadIdx.x) * 7 + 1];
+      block_boxes[threadIdx.x * 7 + 2] =
+          boxes[(THREADS_PER_BLOCK_NMS * col_start + threadIdx.x) * 7 + 2];
+      block_boxes[threadIdx.x * 7 + 3] =
+          boxes[(THREADS_PER_BLOCK_NMS * col_start + threadIdx.x) * 7 + 3];
+      block_boxes[threadIdx.x * 7 + 4] =
+          boxes[(THREADS_PER_BLOCK_NMS * col_start + threadIdx.x) * 7 + 4];
+      block_boxes[threadIdx.x * 7 + 5] =
+          boxes[(THREADS_PER_BLOCK_NMS * col_start + threadIdx.x) * 7 + 5];
+      block_boxes[threadIdx.x * 7 + 6] =
+          boxes[(THREADS_PER_BLOCK_NMS * col_start + threadIdx.x) * 7 + 6];
+    }
+    __syncthreads();
+
+    if (threadIdx.x < row_size) {
+      const int cur_box_idx = THREADS_PER_BLOCK_NMS * row_start + threadIdx.x;
+      const float *cur_box = boxes + cur_box_idx * 7;
+
+      int i = 0;
+      unsigned long long t = 0;
+      int start = 0;
+      if (row_start == col_start) {
+        start = threadIdx.x + 1;
+      }
+      for (i = start; i < col_size; i++) {
+        if (iou_bev(cur_box, block_boxes + i * 7) > nms_overlap_thresh) {
+          t |= 1ULL << i;
+        }
+      }
+      const int col_blocks =
+          (boxes_num + THREADS_PER_BLOCK_NMS - 1) / THREADS_PER_BLOCK_NMS;
+      mask[cur_box_idx * col_blocks + col_start] = t;
+    }
+  }
+}
+
+__global__ void iou3d_nms3d_normal_forward_cuda_kernel(
+    const int boxes_num, const float nms_overlap_thresh, const float *boxes,
+    unsigned long long *mask) {
+  // params: boxes (N, 7) [x, y, z, dx, dy, dz, heading]
+  // params: mask (N, N/THREADS_PER_BLOCK_NMS)
+
+  const int blocks =
+      (boxes_num + THREADS_PER_BLOCK_NMS - 1) / THREADS_PER_BLOCK_NMS;
+  MUSA_2D_KERNEL_BLOCK_LOOP(col_start, blocks, row_start, blocks) {
+    // if (row_start > col_start) return;
+
+    const int row_size = fminf(boxes_num - row_start * THREADS_PER_BLOCK_NMS,
+                               THREADS_PER_BLOCK_NMS);
+    const int col_size = fminf(boxes_num - col_start * THREADS_PER_BLOCK_NMS,
+                               THREADS_PER_BLOCK_NMS);
+
+    __shared__ float block_boxes[THREADS_PER_BLOCK_NMS * 7];
+
+    if (threadIdx.x < col_size) {
+      block_boxes[threadIdx.x * 7 + 0] =
+          boxes[(THREADS_PER_BLOCK_NMS * col_start + threadIdx.x) * 7 + 0];
+      block_boxes[threadIdx.x * 7 + 1] =
+          boxes[(THREADS_PER_BLOCK_NMS * col_start + threadIdx.x) * 7 + 1];
+      block_boxes[threadIdx.x * 7 + 2] =
+          boxes[(THREADS_PER_BLOCK_NMS * col_start + threadIdx.x) * 7 + 2];
+      block_boxes[threadIdx.x * 7 + 3] =
+          boxes[(THREADS_PER_BLOCK_NMS * col_start + threadIdx.x) * 7 + 3];
+      block_boxes[threadIdx.x * 7 + 4] =
+          boxes[(THREADS_PER_BLOCK_NMS * col_start + threadIdx.x) * 7 + 4];
+      block_boxes[threadIdx.x * 7 + 5] =
+          boxes[(THREADS_PER_BLOCK_NMS * col_start + threadIdx.x) * 7 + 5];
+      block_boxes[threadIdx.x * 7 + 6] =
+          boxes[(THREADS_PER_BLOCK_NMS * col_start + threadIdx.x) * 7 + 6];
+    }
+    __syncthreads();
+
+    if (threadIdx.x < row_size) {
+      const int cur_box_idx = THREADS_PER_BLOCK_NMS * row_start + threadIdx.x;
+      const float *cur_box = boxes + cur_box_idx * 7;
+
+      int i = 0;
+      unsigned long long t = 0;
+      int start = 0;
+      if (row_start == col_start) {
+        start = threadIdx.x + 1;
+      }
+      for (i = start; i < col_size; i++) {
+        if (iou_normal(cur_box, block_boxes + i * 7) > nms_overlap_thresh) {
+          t |= 1ULL << i;
+        }
+      }
+      const int col_blocks =
+          (boxes_num + THREADS_PER_BLOCK_NMS - 1) / THREADS_PER_BLOCK_NMS;
+      mask[cur_box_idx * col_blocks + col_start] = t;
+    }
   }
 }
 

@@ -40,10 +40,9 @@ void iou3d_nms_normal_forward_impl(const Tensor boxes, unsigned long long *mask,
 
 void iou3d_boxes_overlap_bev_forward(Tensor boxes_a, Tensor boxes_b,
                                      Tensor ans_overlap) {
-  // params boxes_a: (N, 5) [x1, y1, x2, y2, ry]
+  // params boxes: (N, 7) [x, y, z, dx, dy, dz, heading]
   // params boxes_b: (M, 5)
   // params ans_overlap: (N, M)
-
   int num_a = boxes_a.size(0);
   int num_b = boxes_b.size(0);
 
@@ -148,4 +147,38 @@ void iou3d_nms_normal_forward(Tensor boxes, Tensor keep, Tensor keep_num,
   }
 
   *keep_num_data = num_to_keep;
+}
+
+void iou3d_nms3d_forward_impl(const Tensor boxes, Tensor &keep,
+                              Tensor &keep_num, float nms_overlap_thresh) {
+  DISPATCH_DEVICE_IMPL(iou3d_nms3d_forward_impl, boxes, keep, keep_num,
+                       nms_overlap_thresh);
+}
+
+void iou3d_nms3d_normal_forward_impl(const Tensor boxes, Tensor &keep,
+                                     Tensor &keep_num,
+                                     float nms_overlap_thresh) {
+  DISPATCH_DEVICE_IMPL(iou3d_nms3d_normal_forward_impl, boxes, keep, keep_num,
+                       nms_overlap_thresh);
+}
+
+void iou3d_nms3d_forward(Tensor boxes, Tensor keep, Tensor keep_num,
+                         float nms_overlap_thresh) {
+  // params boxes: (N, 7) [x, y, z, dx, dy, dz, heading]
+  // params keep: (N)
+  CHECK_CONTIGUOUS(boxes);
+  CHECK_CONTIGUOUS(keep);
+
+  iou3d_nms3d_forward_impl(boxes, keep, keep_num, nms_overlap_thresh);
+}
+
+void iou3d_nms3d_normal_forward(Tensor boxes, Tensor keep, Tensor keep_num,
+                                float nms_overlap_thresh) {
+  // params boxes: (N, 7) [x, y, z, dx, dy, dz, heading]
+  // params keep: (N)
+
+  CHECK_CONTIGUOUS(boxes);
+  CHECK_CONTIGUOUS(keep);
+
+  iou3d_nms3d_normal_forward_impl(boxes, keep, keep_num, nms_overlap_thresh);
 }

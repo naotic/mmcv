@@ -113,6 +113,16 @@ void bbox_overlaps(const Tensor bboxes1, const Tensor bboxes2, Tensor ious,
 
 void knn_forward(Tensor xyz_tensor, Tensor new_xyz_tensor, Tensor idx_tensor,
                  Tensor dist2_tensor, int b, int n, int m, int nsample);
+
+void iou3d_boxes_overlap_bev_forward(Tensor boxes_a, Tensor boxes_b,
+                                     Tensor ans_overlap);
+
+void iou3d_nms3d_forward(Tensor boxes, Tensor keep, Tensor keep_num,
+                         float nms_overlap_thresh);
+
+void iou3d_nms3d_normal_forward(Tensor boxes, Tensor keep, Tensor keep_num,
+                                float nms_overlap_thresh);
+
 void iou3d_boxes_overlap_bev_forward(Tensor boxes_a, Tensor boxes_b,
                                      Tensor ans_overlap);
 
@@ -340,6 +350,10 @@ void correlation_backward(Tensor grad_output, Tensor input1, Tensor input2,
                           int dilationH, int dilationW, int dilation_patchH,
                           int dilation_patchW, int dH, int dW);
 
+at::Tensor diff_iou_rotated_sort_vertices_forward(at::Tensor vertices,
+                                                  at::Tensor mask,
+                                                  at::Tensor num_valid);
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("upfirdn2d", &upfirdn2d, "upfirdn2d (CUDA)", py::arg("input"),
         py::arg("kernel"), py::arg("up_x"), py::arg("up_y"), py::arg("down_x"),
@@ -375,6 +389,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("new_xyz_tensor"), py::arg("idx_tensor"),
         py::arg("dist2_tensor"), py::arg("b"), py::arg("n"), py::arg("m"),
         py::arg("nsample"));
+  m.def("iou3d_boxes_overlap_bev_forward", &iou3d_boxes_overlap_bev_forward,
+        "iou3d_boxes_overlap_bev_forward", py::arg("boxes_a"),
+        py::arg("boxes_b"), py::arg("ans_iou"));
+  m.def("iou3d_nms3d_forward", &iou3d_nms3d_forward, "iou3d_nms3d_forward",
+        py::arg("boxes"), py::arg("keep"), py::arg("num_out"),
+        py::arg("nms_overlap_thresh"));
+  m.def("iou3d_nms3d_normal_forward", &iou3d_nms3d_normal_forward,
+        "iou3d_nms3d_normal_forward", py::arg("boxes"), py::arg("keep"),
+        py::arg("num_out"), py::arg("nms_overlap_thresh"));
   m.def("carafe_naive_forward", &carafe_naive_forward, "carafe_naive_forward",
         py::arg("features"), py::arg("masks"), py::arg("output"),
         py::arg("kernel_size"), py::arg("group_size"), py::arg("scale_factor"));
@@ -686,4 +709,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "roiaware_pool3d_backward", py::arg("pts_idx_of_voxels"),
         py::arg("argmax"), py::arg("grad_out"), py::arg("grad_in"),
         py::arg("pool_method"));
+  m.def("diff_iou_rotated_sort_vertices_forward",
+        &diff_iou_rotated_sort_vertices_forward,
+        "diff_iou_rotated_sort_vertices_forward", py::arg("vertices"),
+        py::arg("mask"), py::arg("num_valid"));
 }

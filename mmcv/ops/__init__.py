@@ -16,6 +16,7 @@ from .deprecated_wrappers import Conv2d_deprecated as Conv2d
 from .deprecated_wrappers import ConvTranspose2d_deprecated as ConvTranspose2d
 from .deprecated_wrappers import Linear_deprecated as Linear
 from .deprecated_wrappers import MaxPool2d_deprecated as MaxPool2d
+from .diff_iou_rotated import diff_iou_rotated_2d, diff_iou_rotated_3d
 from .focal_loss import (SigmoidFocalLoss, SoftmaxFocalLoss,
                          sigmoid_focal_loss, softmax_focal_loss)
 from .furthest_point_sample import (furthest_point_sample,
@@ -25,7 +26,8 @@ from .gather_points import gather_points
 from .group_points import GroupAll, QueryAndGroup, grouping_operation
 from .info import (get_compiler_version, get_compiling_cuda_version,
                    get_onnxruntime_op_path)
-from .iou3d import boxes_iou_bev, nms_bev, nms_normal_bev
+from .iou3d import (boxes_iou3d, boxes_iou_bev, boxes_overlap_bev, nms3d,
+                    nms3d_normal, nms_bev, nms_normal_bev)
 from .knn import knn
 from .masked_conv import MaskedConv2d, masked_conv2d
 from .modulated_deform_conv import (ModulatedDeformConv2d,
@@ -48,6 +50,8 @@ from .roipoint_pool3d import RoIPointPool3d
 from .saconv import SAConv2d
 from .scatter_points import DynamicScatter, dynamic_scatter
 from .sync_bn import SyncBatchNorm
+from .sparse_modules import SparseModule, SparseSequential
+from .sparse_structure import SparseConvTensor, scatter_nd
 from .three_interpolate import three_interpolate
 from .three_nn import three_nn
 from .tin_shift import TINShift, tin_shift
@@ -70,12 +74,14 @@ __all__ = [
     'SAConv2d', 'TINShift', 'tin_shift', 'assign_score_withk',
     'box_iou_rotated', 'RoIPointPool3d', 'nms_rotated', 'knn', 'ball_query',
     'upfirdn2d', 'FusedBiasLeakyReLU', 'fused_bias_leakyrelu',
-    'RoIAlignRotated', 'roi_align_rotated', 'pixel_group', 'QueryAndGroup',
-    'GroupAll', 'grouping_operation', 'contour_expand', 'three_nn',
+    'RoIAlignRotated', 'roi_align_rotated', 'SparseModule', 'SparseSequential', 'pixel_group', 'QueryAndGroup',
+    'SparseConvTensor', 'scatter_nd', 'GroupAll', 'grouping_operation', 'contour_expand', 'three_nn',
     'three_interpolate', 'MultiScaleDeformableAttention', 'BorderAlign',
     'border_align', 'gather_points', 'furthest_point_sample',
     'furthest_point_sample_with_dist', 'PointsSampler', 'Correlation',
-    'boxes_iou_bev', 'nms_bev', 'nms_normal_bev', 'Voxelization',
+    'boxes_iou3d', 'boxes_iou_bev', 'boxes_overlap_bev', 'nms3d',
+                    'nms3d_normal', 'nms_bev', 'nms_normal_bev', 'Voxelization',
     'voxelization', 'dynamic_scatter', 'DynamicScatter', 'RoIAwarePool3d',
-    'points_in_boxes_part', 'points_in_boxes_cpu', 'points_in_boxes_all'
+    'points_in_boxes_part', 'points_in_boxes_cpu', 'points_in_boxes_all',
+    'diff_iou_rotated_2d', 'diff_iou_rotated_3d'
 ]
