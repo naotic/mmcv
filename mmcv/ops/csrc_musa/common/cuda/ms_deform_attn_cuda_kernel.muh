@@ -8,15 +8,42 @@
 *https://github.com/chengdazhi/Deformable-Convolution-V2-PyTorch/tree/pytorch_1.0.0
 **************************************************************************************************
 */
-#ifndef DEFORM_ATTN_CUDA_KERNEL
-#define DEFORM_ATTN_CUDA_KERNEL
+#ifndef DEFORM_ATTN_MUSA_KERNEL
+#define DEFORM_ATTN_MUSA_KERNEL
 
 #include "common_cuda_helper.hpp"
 #include "pytorch_cuda_helper.hpp"
 
-const int CUDA_NUM_THREADS = 1024;
 inline int GET_BLOCKS(const int N, const int num_threads) {
   return (N + num_threads - 1) / num_threads;
+}
+
+#if defined(__MUSA_ARCH__) && __MUSA_ARCH__ >= 310  // MUSIFY_EXCL_LINE
+#define __SYNCTHREADS_LM __syncthreads_lm()
+#else
+#define __SYNCTHREADS_LM __syncthreads()
+#endif
+
+template <typename scalar_t>
+__device__ __forceinline__ scalar_t ms_deform_attn_warp_reduce_sum(
+    scalar_t val) {
+  for (int offset = 16; offset > 0; offset >>= 1)
+    val += __shfl_down_sync(0xffffffff, val, offset);
+  return val;
+}
+
+template <typename T>
+__device__ __forceinline__ T ms_deform_attn_warp_broadcast(
+    T val, int src_lane = 0) {
+  return __shfl_sync(0xffffffff, val, src_lane);
+}
+
+template <>
+__device__ __forceinline__ phalf ms_deform_attn_warp_reduce_sum(phalf val) {
+  for (int offset = 16; offset > 0; offset >>= 1)
+    __PHALF(val) +=
+        __shfl_down_sync(0xffffffff, __PHALF(val).operator __half(), offset);
+  return val;
 }
 
 template <typename scalar_t>
@@ -258,6 +285,186 @@ __global__ void ms_deformable_im2col_gpu_kernel(
   }
 }
 
+template <typename scalar_t, int numLevels, int numPoint>
+__global__ void ms_deformable_im2col_gpu_kernel_channels32(
+    const int n, const scalar_t *data_value,
+    const int64_t *data_spatial_shapes,
+    const int64_t *data_level_start_index,
+    const scalar_t *data_sampling_loc, const scalar_t *data_attn_weight,
+    const int batch_size, const int spatial_size, const int num_heads,
+    const int num_query, scalar_t *data_col) {
+  constexpr int channels = 32;
+  CUDA_1D_KERNEL_LOOP(index, n) {
+    const int c_col = index & (channels - 1);
+    int _temp = index >> 5;
+    const int sampling_index = _temp;
+    const int m_col = _temp % num_heads;
+    _temp /= num_heads;
+    _temp /= num_query;
+    const int b_col = _temp;
+
+    int data_weight_ptr = sampling_index * numLevels * numPoint;
+    int data_loc_w_ptr = data_weight_ptr << 1;
+    const int qid_stride = num_heads * channels;
+    const int data_value_ptr_init_offset = b_col * spatial_size * qid_stride;
+    scalar_t col = 0;
+
+#pragma unroll
+    for (int l_col = 0; l_col < numLevels; ++l_col) {
+      const int level_start_id = data_level_start_index[l_col];
+      const int spatial_h_ptr = l_col << 1;
+      const int spatial_h = data_spatial_shapes[spatial_h_ptr];
+      const int spatial_w = data_spatial_shapes[spatial_h_ptr + 1];
+      const scalar_t *data_value_ptr =
+          data_value +
+          (data_value_ptr_init_offset + level_start_id * qid_stride);
+#pragma unroll
+      for (int p_col = 0; p_col < numPoint; ++p_col) {
+        const scalar_t loc_w = data_sampling_loc[data_loc_w_ptr];
+        const scalar_t loc_h = data_sampling_loc[data_loc_w_ptr + 1];
+        const scalar_t weight = data_attn_weight[data_weight_ptr];
+
+        const scalar_t h_im = loc_h * spatial_h - scalar_t(0.5);
+        const scalar_t w_im = loc_w * spatial_w - scalar_t(0.5);
+
+        if (h_im > -1 && w_im > -1 && h_im < spatial_h && w_im < spatial_w) {
+          col += ms_deform_attn_im2col_bilinear(data_value_ptr, spatial_h,
+                                                spatial_w, num_heads, channels,
+                                                h_im, w_im, m_col, c_col) *
+                 weight;
+        }
+
+        data_weight_ptr += 1;
+        data_loc_w_ptr += 2;
+      }
+    }
+    data_col[index] = col;
+  }
+}
+
+template <typename scalar_t>
+__global__ void ms_deformable_im2col_gpu_kernel_channels32_runtime(
+    const int n, const scalar_t *data_value,
+    const int64_t *data_spatial_shapes,
+    const int64_t *data_level_start_index,
+    const scalar_t *data_sampling_loc, const scalar_t *data_attn_weight,
+    const int batch_size, const int spatial_size, const int num_heads,
+    const int num_levels, const int num_query, const int num_point,
+    scalar_t *data_col) {
+  constexpr int channels = 32;
+  CUDA_1D_KERNEL_LOOP(index, n) {
+    const int c_col = index & (channels - 1);
+    int _temp = index >> 5;
+    const int sampling_index = _temp;
+    const int m_col = _temp % num_heads;
+    _temp /= num_heads;
+    _temp /= num_query;
+    const int b_col = _temp;
+
+    int data_weight_ptr = sampling_index * num_levels * num_point;
+    int data_loc_w_ptr = data_weight_ptr << 1;
+    const int qid_stride = num_heads * channels;
+    const int data_value_ptr_init_offset = b_col * spatial_size * qid_stride;
+    scalar_t col = 0;
+
+    for (int l_col = 0; l_col < num_levels; ++l_col) {
+      const int level_start_id = data_level_start_index[l_col];
+      const int spatial_h_ptr = l_col << 1;
+      const int spatial_h = data_spatial_shapes[spatial_h_ptr];
+      const int spatial_w = data_spatial_shapes[spatial_h_ptr + 1];
+      const scalar_t *data_value_ptr =
+          data_value +
+          (data_value_ptr_init_offset + level_start_id * qid_stride);
+      for (int p_col = 0; p_col < num_point; ++p_col) {
+        const scalar_t loc_w = data_sampling_loc[data_loc_w_ptr];
+        const scalar_t loc_h = data_sampling_loc[data_loc_w_ptr + 1];
+        const scalar_t weight = data_attn_weight[data_weight_ptr];
+
+        const scalar_t h_im = loc_h * spatial_h - scalar_t(0.5);
+        const scalar_t w_im = loc_w * spatial_w - scalar_t(0.5);
+
+        if (h_im > -1 && w_im > -1 && h_im < spatial_h && w_im < spatial_w) {
+          col += ms_deform_attn_im2col_bilinear(data_value_ptr, spatial_h,
+                                                spatial_w, num_heads, channels,
+                                                h_im, w_im, m_col, c_col) *
+                 weight;
+        }
+
+        data_weight_ptr += 1;
+        data_loc_w_ptr += 2;
+      }
+    }
+    data_col[index] = col;
+  }
+}
+
+template <typename scalar_t>
+__global__ void ms_deformable_im2col_scatter_div_gpu_kernel_channels32_runtime(
+    const int n, const scalar_t *data_value,
+    const int64_t *data_spatial_shapes,
+    const int64_t *data_level_start_index,
+    const scalar_t *data_sampling_loc, const scalar_t *data_attn_weight,
+    const int64_t *data_index, const scalar_t *data_count,
+    const int batch_size, const int num_cams, const int cam_id,
+    const int spatial_size, const int num_heads, const int num_levels,
+    const int valid_len, const int max_len, const int num_point,
+    const int num_query, scalar_t *data_slots) {
+  constexpr int channels = 32;
+  CUDA_1D_KERNEL_LOOP(index, n) {
+    const int c_col = index & (channels - 1);
+    int _temp = index >> 5;
+    const int m_col = _temp % num_heads;
+    _temp /= num_heads;
+    const int q_col = _temp % valid_len;
+    const int b_col = _temp / valid_len;
+
+    const int64_t bev_query = data_index[q_col];
+    const int sample_id = b_col * num_cams + cam_id;
+    const int sampling_index =
+        (sample_id * max_len + q_col) * num_heads + m_col;
+    int data_weight_ptr = sampling_index * num_levels * num_point;
+    int data_loc_w_ptr = data_weight_ptr << 1;
+    const int qid_stride = num_heads * channels;
+    const int data_value_ptr_init_offset =
+        sample_id * spatial_size * qid_stride;
+    scalar_t col = 0;
+
+    for (int l_col = 0; l_col < num_levels; ++l_col) {
+      const int level_start_id = data_level_start_index[l_col];
+      const int spatial_h_ptr = l_col << 1;
+      const int spatial_h = data_spatial_shapes[spatial_h_ptr];
+      const int spatial_w = data_spatial_shapes[spatial_h_ptr + 1];
+      const scalar_t *data_value_ptr =
+          data_value +
+          (data_value_ptr_init_offset + level_start_id * qid_stride);
+      for (int p_col = 0; p_col < num_point; ++p_col) {
+        const scalar_t loc_w = data_sampling_loc[data_loc_w_ptr];
+        const scalar_t loc_h = data_sampling_loc[data_loc_w_ptr + 1];
+        const scalar_t weight = data_attn_weight[data_weight_ptr];
+
+        const scalar_t h_im = loc_h * spatial_h - scalar_t(0.5);
+        const scalar_t w_im = loc_w * spatial_w - scalar_t(0.5);
+
+        if (h_im > -1 && w_im > -1 && h_im < spatial_h && w_im < spatial_w) {
+          col += ms_deform_attn_im2col_bilinear(data_value_ptr, spatial_h,
+                                                spatial_w, num_heads, channels,
+                                                h_im, w_im, m_col, c_col) *
+                 weight;
+        }
+
+        data_weight_ptr += 1;
+        data_loc_w_ptr += 2;
+      }
+    }
+
+    const scalar_t inv_count =
+        scalar_t(1) / data_count[b_col * num_query + bev_query];
+    const int slot_offset =
+        (b_col * num_query + bev_query) * qid_stride + m_col * channels + c_col;
+    data_slots[slot_offset] += col * inv_count;
+  }
+}
+
 template <typename scalar_t, unsigned int blockSize>
 __global__ void ms_deformable_col2im_gpu_kernel_shm_blocksize_aware_reduce_v1(
     const int n, const scalar_t *grad_col, const scalar_t *data_value,
@@ -267,6 +474,7 @@ __global__ void ms_deformable_col2im_gpu_kernel_shm_blocksize_aware_reduce_v1(
     const int channels, const int num_levels, const int num_query,
     const int num_point, scalar_t *grad_value, scalar_t *grad_sampling_loc,
     scalar_t *grad_attn_weight) {
+  const int qid_stride = num_heads * channels;
   CUDA_1D_KERNEL_LOOP(index, n) {
     __shared__ scalar_t cache_grad_sampling_loc[blockSize * 2];
     __shared__ scalar_t cache_grad_attn_weight[blockSize];
@@ -285,11 +493,11 @@ __global__ void ms_deformable_col2im_gpu_kernel_shm_blocksize_aware_reduce_v1(
     int data_weight_ptr = sampling_index * num_levels * num_point;
     int data_loc_w_ptr = data_weight_ptr << 1;
     const int grad_sampling_ptr = data_weight_ptr;
-    grad_sampling_loc += grad_sampling_ptr << 1;
-    grad_attn_weight += grad_sampling_ptr;
+    scalar_t *grad_sampling_loc_out =
+        grad_sampling_loc + (grad_sampling_ptr << 1);
+    scalar_t *grad_attn_weight_out = grad_attn_weight + grad_sampling_ptr;
     const int grad_weight_stride = 1;
     const int grad_loc_stride = 2;
-    const int qid_stride = num_heads * channels;
     const int data_value_ptr_init_offset = b_col * spatial_size * qid_stride;
 
     for (int l_col = 0; l_col < num_levels; ++l_col) {
@@ -309,40 +517,161 @@ __global__ void ms_deformable_col2im_gpu_kernel_shm_blocksize_aware_reduce_v1(
 
         const scalar_t h_im = loc_h * spatial_h - 0.5;
         const scalar_t w_im = loc_w * spatial_w - 0.5;
-        *(cache_grad_sampling_loc + (threadIdx.x << 1)) = 0;
-        *(cache_grad_sampling_loc + ((threadIdx.x << 1) + 1)) = 0;
-        *(cache_grad_attn_weight + threadIdx.x) = 0;
+        if constexpr (blockSize == 32) {
+          scalar_t grad_sampling_loc_cache[2] = {scalar_t(0), scalar_t(0)};
+          scalar_t grad_attn_weight_cache = scalar_t(0);
+          if (h_im > -1 && w_im > -1 && h_im < spatial_h && w_im < spatial_w) {
+            ms_deform_attn_col2im_bilinear(
+                data_value_ptr, spatial_h, spatial_w, num_heads, channels,
+                h_im, w_im, m_col, c_col, top_grad, weight, grad_value_ptr,
+                grad_sampling_loc_cache, &grad_attn_weight_cache);
+          }
+
+          const scalar_t grad_w =
+              ms_deform_attn_warp_reduce_sum(grad_sampling_loc_cache[0]);
+          const scalar_t grad_h =
+              ms_deform_attn_warp_reduce_sum(grad_sampling_loc_cache[1]);
+          const scalar_t grad_a =
+              ms_deform_attn_warp_reduce_sum(grad_attn_weight_cache);
+
+          if (tid == 0) {
+            *grad_sampling_loc_out = grad_w;
+            *(grad_sampling_loc_out + 1) = grad_h;
+            *grad_attn_weight_out = grad_a;
+          }
+        } else {
+          *(cache_grad_sampling_loc + (threadIdx.x << 1)) = 0;
+          *(cache_grad_sampling_loc + ((threadIdx.x << 1) + 1)) = 0;
+          *(cache_grad_attn_weight + threadIdx.x) = 0;
+          if (h_im > -1 && w_im > -1 && h_im < spatial_h && w_im < spatial_w) {
+            ms_deform_attn_col2im_bilinear(
+                data_value_ptr, spatial_h, spatial_w, num_heads, channels,
+                h_im, w_im, m_col, c_col, top_grad, weight, grad_value_ptr,
+                cache_grad_sampling_loc + (threadIdx.x << 1),
+                cache_grad_attn_weight + threadIdx.x);
+          }
+
+          __SYNCTHREADS_LM;
+          if (tid == 0) {
+            scalar_t _grad_w = cache_grad_sampling_loc[0],
+                     _grad_h = cache_grad_sampling_loc[1],
+                     _grad_a = cache_grad_attn_weight[0];
+            int sid = 2;
+            for (unsigned int tid = 1; tid < blockSize; ++tid) {
+              _grad_w += cache_grad_sampling_loc[sid];
+              _grad_h += cache_grad_sampling_loc[sid + 1];
+              _grad_a += cache_grad_attn_weight[tid];
+              sid += 2;
+            }
+
+            *grad_sampling_loc_out = _grad_w;
+            *(grad_sampling_loc_out + 1) = _grad_h;
+            *grad_attn_weight_out = _grad_a;
+          }
+          __SYNCTHREADS_LM;
+        }
+
+        data_weight_ptr += 1;
+        data_loc_w_ptr += 2;
+        grad_attn_weight_out += grad_weight_stride;
+        grad_sampling_loc_out += grad_loc_stride;
+      }
+    }
+  }
+}
+
+template <typename scalar_t, unsigned int kWarpsPerBlock>
+__global__ void
+ms_deformable_col2im_gpu_kernel_warp_broadcast_multi_warp_channels32(
+    const int n, const scalar_t *grad_col, const scalar_t *data_value,
+    const int64_t *data_spatial_shapes, const int64_t *data_level_start_index,
+    const scalar_t *data_sampling_loc, const scalar_t *data_attn_weight,
+    const int batch_size, const int spatial_size, const int num_heads,
+    const int channels, const int num_levels, const int num_query,
+    const int num_point, scalar_t *grad_value, scalar_t *grad_sampling_loc,
+    scalar_t *grad_attn_weight) {
+  constexpr unsigned int kWarpSize = 32;
+  const unsigned int lane_id = threadIdx.x & (kWarpSize - 1);
+  const unsigned int warp_id = threadIdx.x >> 5;
+  const int qid_stride = num_heads * channels;
+  const int num_warp_kernels = n >> 5;
+
+  for (int warp_kernel = blockIdx.x * kWarpsPerBlock + warp_id;
+       warp_kernel < num_warp_kernels;
+       warp_kernel += gridDim.x * kWarpsPerBlock) {
+    const int c_col = lane_id;
+    const int sampling_index = warp_kernel;
+    const int m_col = sampling_index % num_heads;
+    const int b_col = sampling_index / (num_heads * num_query);
+    const int grad_sampling_ptr = sampling_index * num_levels * num_point;
+    scalar_t *grad_sampling_loc_out =
+        grad_sampling_loc + (grad_sampling_ptr << 1);
+    scalar_t *grad_attn_weight_out = grad_attn_weight + grad_sampling_ptr;
+    const scalar_t top_grad = grad_col[(warp_kernel << 5) + lane_id];
+    const int data_value_ptr_init_offset = b_col * spatial_size * qid_stride;
+    int data_weight_ptr = grad_sampling_ptr;
+    int data_loc_w_ptr = grad_sampling_ptr << 1;
+
+    for (int l_col = 0; l_col < num_levels; ++l_col) {
+      int level_start_id = 0;
+      int spatial_h = 0;
+      int spatial_w = 0;
+      if (lane_id == 0) {
+        level_start_id = static_cast<int>(data_level_start_index[l_col]);
+        const int spatial_h_ptr = l_col << 1;
+        spatial_h = static_cast<int>(data_spatial_shapes[spatial_h_ptr]);
+        spatial_w = static_cast<int>(data_spatial_shapes[spatial_h_ptr + 1]);
+      }
+      level_start_id = ms_deform_attn_warp_broadcast(level_start_id);
+      spatial_h = ms_deform_attn_warp_broadcast(spatial_h);
+      spatial_w = ms_deform_attn_warp_broadcast(spatial_w);
+
+      const int value_ptr_offset =
+          data_value_ptr_init_offset + level_start_id * qid_stride;
+      const scalar_t *data_value_ptr = data_value + value_ptr_offset;
+      scalar_t *grad_value_ptr = grad_value + value_ptr_offset;
+
+      for (int p_col = 0; p_col < num_point; ++p_col) {
+        scalar_t loc_w = scalar_t(0);
+        scalar_t loc_h = scalar_t(0);
+        scalar_t weight = scalar_t(0);
+        if (lane_id == 0) {
+          loc_w = data_sampling_loc[data_loc_w_ptr];
+          loc_h = data_sampling_loc[data_loc_w_ptr + 1];
+          weight = data_attn_weight[data_weight_ptr];
+        }
+        loc_w = ms_deform_attn_warp_broadcast(loc_w);
+        loc_h = ms_deform_attn_warp_broadcast(loc_h);
+        weight = ms_deform_attn_warp_broadcast(weight);
+
+        const scalar_t h_im = loc_h * spatial_h - 0.5;
+        const scalar_t w_im = loc_w * spatial_w - 0.5;
+        scalar_t grad_sampling_loc_cache[2] = {scalar_t(0), scalar_t(0)};
+        scalar_t grad_attn_weight_cache = scalar_t(0);
         if (h_im > -1 && w_im > -1 && h_im < spatial_h && w_im < spatial_w) {
           ms_deform_attn_col2im_bilinear(
               data_value_ptr, spatial_h, spatial_w, num_heads, channels, h_im,
               w_im, m_col, c_col, top_grad, weight, grad_value_ptr,
-              cache_grad_sampling_loc + (threadIdx.x << 1),
-              cache_grad_attn_weight + threadIdx.x);
+              grad_sampling_loc_cache, &grad_attn_weight_cache);
         }
 
-        __syncthreads();
-        if (tid == 0) {
-          scalar_t _grad_w = cache_grad_sampling_loc[0],
-                   _grad_h = cache_grad_sampling_loc[1],
-                   _grad_a = cache_grad_attn_weight[0];
-          int sid = 2;
-          for (unsigned int tid = 1; tid < blockSize; ++tid) {
-            _grad_w += cache_grad_sampling_loc[sid];
-            _grad_h += cache_grad_sampling_loc[sid + 1];
-            _grad_a += cache_grad_attn_weight[tid];
-            sid += 2;
-          }
+        const scalar_t grad_w =
+            ms_deform_attn_warp_reduce_sum(grad_sampling_loc_cache[0]);
+        const scalar_t grad_h =
+            ms_deform_attn_warp_reduce_sum(grad_sampling_loc_cache[1]);
+        const scalar_t grad_a =
+            ms_deform_attn_warp_reduce_sum(grad_attn_weight_cache);
 
-          *grad_sampling_loc = _grad_w;
-          *(grad_sampling_loc + 1) = _grad_h;
-          *grad_attn_weight = _grad_a;
+        if (lane_id == 0) {
+          *grad_sampling_loc_out = grad_w;
+          *(grad_sampling_loc_out + 1) = grad_h;
+          *grad_attn_weight_out = grad_a;
         }
-        __syncthreads();
 
         data_weight_ptr += 1;
         data_loc_w_ptr += 2;
-        grad_attn_weight += grad_weight_stride;
-        grad_sampling_loc += grad_loc_stride;
+        grad_attn_weight_out += 1;
+        grad_sampling_loc_out += 2;
       }
     }
   }
@@ -375,8 +704,9 @@ __global__ void ms_deformable_col2im_gpu_kernel_shm_blocksize_aware_reduce_v2(
     int data_weight_ptr = sampling_index * num_levels * num_point;
     int data_loc_w_ptr = data_weight_ptr << 1;
     const int grad_sampling_ptr = data_weight_ptr;
-    grad_sampling_loc += grad_sampling_ptr << 1;
-    grad_attn_weight += grad_sampling_ptr;
+    scalar_t *grad_sampling_loc_out =
+        grad_sampling_loc + (grad_sampling_ptr << 1);
+    scalar_t *grad_attn_weight_out = grad_attn_weight + grad_sampling_ptr;
     const int grad_weight_stride = 1;
     const int grad_loc_stride = 2;
     const int qid_stride = num_heads * channels;
@@ -410,7 +740,7 @@ __global__ void ms_deformable_col2im_gpu_kernel_shm_blocksize_aware_reduce_v2(
               cache_grad_attn_weight + threadIdx.x);
         }
 
-        __syncthreads();
+        __SYNCTHREADS_LM;
 
         for (unsigned int s = blockSize / 2; s > 0; s >>= 1) {
           if (tid < s) {
@@ -421,20 +751,20 @@ __global__ void ms_deformable_col2im_gpu_kernel_shm_blocksize_aware_reduce_v2(
             cache_grad_sampling_loc[xid1 + 1] +=
                 cache_grad_sampling_loc[xid2 + 1];
           }
-          __syncthreads();
+          __SYNCTHREADS_LM;
         }
 
         if (tid == 0) {
-          *grad_sampling_loc = cache_grad_sampling_loc[0];
-          *(grad_sampling_loc + 1) = cache_grad_sampling_loc[1];
-          *grad_attn_weight = cache_grad_attn_weight[0];
+          *grad_sampling_loc_out = cache_grad_sampling_loc[0];
+          *(grad_sampling_loc_out + 1) = cache_grad_sampling_loc[1];
+          *grad_attn_weight_out = cache_grad_attn_weight[0];
         }
-        __syncthreads();
+        __SYNCTHREADS_LM;
 
         data_weight_ptr += 1;
         data_loc_w_ptr += 2;
-        grad_attn_weight += grad_weight_stride;
-        grad_sampling_loc += grad_loc_stride;
+        grad_attn_weight_out += grad_weight_stride;
+        grad_sampling_loc_out += grad_loc_stride;
       }
     }
   }
@@ -468,8 +798,9 @@ __global__ void ms_deformable_col2im_gpu_kernel_shm_reduce_v1(
     int data_weight_ptr = sampling_index * num_levels * num_point;
     int data_loc_w_ptr = data_weight_ptr << 1;
     const int grad_sampling_ptr = data_weight_ptr;
-    grad_sampling_loc += grad_sampling_ptr << 1;
-    grad_attn_weight += grad_sampling_ptr;
+    scalar_t *grad_sampling_loc_out =
+        grad_sampling_loc + (grad_sampling_ptr << 1);
+    scalar_t *grad_attn_weight_out = grad_attn_weight + grad_sampling_ptr;
     const int grad_weight_stride = 1;
     const int grad_loc_stride = 2;
     const int qid_stride = num_heads * channels;
@@ -503,7 +834,7 @@ __global__ void ms_deformable_col2im_gpu_kernel_shm_reduce_v1(
               cache_grad_attn_weight + threadIdx.x);
         }
 
-        __syncthreads();
+        __SYNCTHREADS_LM;
         if (tid == 0) {
           scalar_t _grad_w = cache_grad_sampling_loc[0],
                    _grad_h = cache_grad_sampling_loc[1],
@@ -516,16 +847,16 @@ __global__ void ms_deformable_col2im_gpu_kernel_shm_reduce_v1(
             sid += 2;
           }
 
-          *grad_sampling_loc = _grad_w;
-          *(grad_sampling_loc + 1) = _grad_h;
-          *grad_attn_weight = _grad_a;
+          *grad_sampling_loc_out = _grad_w;
+          *(grad_sampling_loc_out + 1) = _grad_h;
+          *grad_attn_weight_out = _grad_a;
         }
-        __syncthreads();
+        __SYNCTHREADS_LM;
 
         data_weight_ptr += 1;
         data_loc_w_ptr += 2;
-        grad_attn_weight += grad_weight_stride;
-        grad_sampling_loc += grad_loc_stride;
+        grad_attn_weight_out += grad_weight_stride;
+        grad_sampling_loc_out += grad_loc_stride;
       }
     }
   }
@@ -559,8 +890,9 @@ __global__ void ms_deformable_col2im_gpu_kernel_shm_reduce_v2(
     int data_weight_ptr = sampling_index * num_levels * num_point;
     int data_loc_w_ptr = data_weight_ptr << 1;
     const int grad_sampling_ptr = data_weight_ptr;
-    grad_sampling_loc += grad_sampling_ptr << 1;
-    grad_attn_weight += grad_sampling_ptr;
+    scalar_t *grad_sampling_loc_out =
+        grad_sampling_loc + (grad_sampling_ptr << 1);
+    scalar_t *grad_attn_weight_out = grad_attn_weight + grad_sampling_ptr;
     const int grad_weight_stride = 1;
     const int grad_loc_stride = 2;
     const int qid_stride = num_heads * channels;
@@ -594,7 +926,7 @@ __global__ void ms_deformable_col2im_gpu_kernel_shm_reduce_v2(
               cache_grad_attn_weight + threadIdx.x);
         }
 
-        __syncthreads();
+        __SYNCTHREADS_LM;
 
         for (unsigned int s = blockDim.x / 2, spre = blockDim.x; s > 0;
              s >>= 1, spre >>= 1) {
@@ -614,20 +946,20 @@ __global__ void ms_deformable_col2im_gpu_kernel_shm_reduce_v2(
                   cache_grad_sampling_loc[xid2 + 1 + (s << 1)];
             }
           }
-          __syncthreads();
+          __SYNCTHREADS_LM;
         }
 
         if (tid == 0) {
-          *grad_sampling_loc = cache_grad_sampling_loc[0];
-          *(grad_sampling_loc + 1) = cache_grad_sampling_loc[1];
-          *grad_attn_weight = cache_grad_attn_weight[0];
+          *grad_sampling_loc_out = cache_grad_sampling_loc[0];
+          *(grad_sampling_loc_out + 1) = cache_grad_sampling_loc[1];
+          *grad_attn_weight_out = cache_grad_attn_weight[0];
         }
-        __syncthreads();
+        __SYNCTHREADS_LM;
 
         data_weight_ptr += 1;
         data_loc_w_ptr += 2;
-        grad_attn_weight += grad_weight_stride;
-        grad_sampling_loc += grad_loc_stride;
+        grad_attn_weight_out += grad_weight_stride;
+        grad_sampling_loc_out += grad_loc_stride;
       }
     }
   }
@@ -645,7 +977,8 @@ __global__ void ms_deformable_col2im_gpu_kernel_shm_reduce_v2_multi_blocks(
   CUDA_1D_KERNEL_LOOP(index, n) {
     extern __shared__ int _s[];
     scalar_t *cache_grad_sampling_loc = reinterpret_cast<scalar_t *>(_s);
-    scalar_t *cache_grad_attn_weight = cache_grad_sampling_loc + 2 * blockDim.x;
+    scalar_t *cache_grad_attn_weight =
+        cache_grad_sampling_loc + 2 * blockDim.x;
     unsigned int tid = threadIdx.x;
     int _temp = index;
     const int c_col = _temp % channels;
@@ -661,8 +994,9 @@ __global__ void ms_deformable_col2im_gpu_kernel_shm_reduce_v2_multi_blocks(
     int data_weight_ptr = sampling_index * num_levels * num_point;
     int data_loc_w_ptr = data_weight_ptr << 1;
     const int grad_sampling_ptr = data_weight_ptr;
-    grad_sampling_loc += grad_sampling_ptr << 1;
-    grad_attn_weight += grad_sampling_ptr;
+    scalar_t *grad_sampling_loc_out =
+        grad_sampling_loc + (grad_sampling_ptr << 1);
+    scalar_t *grad_attn_weight_out = grad_attn_weight + grad_sampling_ptr;
     const int grad_weight_stride = 1;
     const int grad_loc_stride = 2;
     const int qid_stride = num_heads * channels;
@@ -696,7 +1030,7 @@ __global__ void ms_deformable_col2im_gpu_kernel_shm_reduce_v2_multi_blocks(
               cache_grad_attn_weight + threadIdx.x);
         }
 
-        __syncthreads();
+        __SYNCTHREADS_LM;
 
         for (unsigned int s = blockDim.x / 2, spre = blockDim.x; s > 0;
              s >>= 1, spre >>= 1) {
@@ -716,20 +1050,20 @@ __global__ void ms_deformable_col2im_gpu_kernel_shm_reduce_v2_multi_blocks(
                   cache_grad_sampling_loc[xid2 + 1 + (s << 1)];
             }
           }
-          __syncthreads();
+          __SYNCTHREADS_LM;
         }
 
         if (tid == 0) {
-          atomicAdd(grad_sampling_loc, cache_grad_sampling_loc[0]);
-          atomicAdd(grad_sampling_loc + 1, cache_grad_sampling_loc[1]);
-          atomicAdd(grad_attn_weight, cache_grad_attn_weight[0]);
+          atomicAdd(grad_sampling_loc_out, cache_grad_sampling_loc[0]);
+          atomicAdd(grad_sampling_loc_out + 1, cache_grad_sampling_loc[1]);
+          atomicAdd(grad_attn_weight_out, cache_grad_attn_weight[0]);
         }
-        __syncthreads();
+        __SYNCTHREADS_LM;
 
         data_weight_ptr += 1;
         data_loc_w_ptr += 2;
-        grad_attn_weight += grad_weight_stride;
-        grad_sampling_loc += grad_loc_stride;
+        grad_attn_weight_out += grad_weight_stride;
+        grad_sampling_loc_out += grad_loc_stride;
       }
     }
   }
@@ -759,8 +1093,9 @@ __global__ void ms_deformable_col2im_gpu_kernel_gm(
     int data_weight_ptr = sampling_index * num_levels * num_point;
     int data_loc_w_ptr = data_weight_ptr << 1;
     const int grad_sampling_ptr = data_weight_ptr;
-    grad_sampling_loc += grad_sampling_ptr << 1;
-    grad_attn_weight += grad_sampling_ptr;
+    scalar_t *grad_sampling_loc_out =
+        grad_sampling_loc + (grad_sampling_ptr << 1);
+    scalar_t *grad_attn_weight_out = grad_attn_weight + grad_sampling_ptr;
     const int grad_weight_stride = 1;
     const int grad_loc_stride = 2;
     const int qid_stride = num_heads * channels;
@@ -787,14 +1122,14 @@ __global__ void ms_deformable_col2im_gpu_kernel_gm(
           ms_deform_attn_col2im_bilinear_gm(
               data_value_ptr, spatial_h, spatial_w, num_heads, channels, h_im,
               w_im, m_col, c_col, top_grad, weight, grad_value_ptr,
-              grad_sampling_loc, grad_attn_weight);
+              grad_sampling_loc_out, grad_attn_weight_out);
         }
         data_weight_ptr += 1;
         data_loc_w_ptr += 2;
-        grad_attn_weight += grad_weight_stride;
-        grad_sampling_loc += grad_loc_stride;
+        grad_attn_weight_out += grad_weight_stride;
+        grad_sampling_loc_out += grad_loc_stride;
       }
     }
   }
 }
-#endif  // DEFORM_ATTN_CUDA_KERNEL
+#endif  // DEFORM_ATTN_MUSA_KERNEL

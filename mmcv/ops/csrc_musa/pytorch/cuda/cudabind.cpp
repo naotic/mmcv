@@ -564,74 +564,6 @@ REGISTER_DEVICE_IMPL(group_points_forward_impl, PrivateUse1,
 REGISTER_DEVICE_IMPL(group_points_backward_impl, PrivateUse1,
                      group_points_backward_cuda);
 
-
-void IoU3DBoxesOverlapBevForwardCUDAKernelLauncher(const int num_a,
-                                                   const Tensor boxes_a,
-                                                   const int num_b,
-                                                   const Tensor boxes_b,
-                                                   Tensor ans_overlap);
-
-void IoU3DNMS3DForwardCUDAKernelLauncher(const Tensor boxes, Tensor &keep,
-                                         Tensor &keep_num,
-                                         float nms_overlap_thresh);
-
-void IoU3DNMS3DNormalForwardCUDAKernelLauncher(const Tensor boxes, Tensor &keep,
-                                               Tensor &keep_num,
-                                               float nms_overlap_thresh);
-
-void iou3d_boxes_overlap_bev_forward_cuda(const int num_a, const Tensor boxes_a,
-                                          const int num_b, const Tensor boxes_b,
-                                          Tensor ans_overlap) {
-  IoU3DBoxesOverlapBevForwardCUDAKernelLauncher(num_a, boxes_a, num_b, boxes_b,
-                                                ans_overlap);
-};
-
-void iou3d_nms3d_forward_cuda(const Tensor boxes, Tensor &keep,
-                              Tensor &keep_num, float nms_overlap_thresh) {
-  IoU3DNMS3DForwardCUDAKernelLauncher(boxes, keep, keep_num,
-                                      nms_overlap_thresh);
-};
-
-void iou3d_nms3d_normal_forward_cuda(const Tensor boxes, Tensor &keep,
-                                     Tensor &keep_num,
-                                     float nms_overlap_thresh) {
-  IoU3DNMS3DNormalForwardCUDAKernelLauncher(boxes, keep, keep_num,
-                                            nms_overlap_thresh);
-};
-
-void iou3d_boxes_overlap_bev_forward_impl(const int num_a, const Tensor boxes_a,
-                                          const int num_b, const Tensor boxes_b,
-                                          Tensor ans_overlap);
-
-void iou3d_nms3d_forward_impl(const Tensor boxes, Tensor &keep,
-                              Tensor &keep_num, float nms_overlap_thresh);
-
-void iou3d_nms3d_normal_forward_impl(const Tensor boxes, Tensor &keep,
-                                     Tensor &keep_num,
-                                     float nms_overlap_thresh);
-
-REGISTER_DEVICE_IMPL(iou3d_boxes_overlap_bev_forward_impl, PrivateUse1,
-                     iou3d_boxes_overlap_bev_forward_cuda);
-REGISTER_DEVICE_IMPL(iou3d_nms3d_forward_impl, PrivateUse1, iou3d_nms3d_forward_cuda);
-REGISTER_DEVICE_IMPL(iou3d_nms3d_normal_forward_impl, PrivateUse1,
-                     iou3d_nms3d_normal_forward_cuda);
-
-Tensor DiffIoURotatedSortVerticesCUDAKernelLauncher(Tensor vertices,
-                                                    Tensor mask,
-                                                    Tensor num_valid);
-
-Tensor diff_iou_rotated_sort_vertices_forward_cuda(Tensor vertices, Tensor mask,
-                                                   Tensor num_valid) {
-  return DiffIoURotatedSortVerticesCUDAKernelLauncher(vertices, mask,
-                                                      num_valid);
-}
-
-Tensor diff_iou_rotated_sort_vertices_forward_impl(Tensor vertices, Tensor mask,
-                                                   Tensor num_valid);
-
-REGISTER_DEVICE_IMPL(diff_iou_rotated_sort_vertices_forward_impl, PrivateUse1,
-                     diff_iou_rotated_sort_vertices_forward_cuda);
-
 void IoU3DBoxesOverlapBevForwardCUDAKernelLauncher(const int num_a,
                                                    const Tensor boxes_a,
                                                    const int num_b,
@@ -653,12 +585,12 @@ void IoU3DNMSNormalForwardCUDAKernelLauncher(const Tensor boxes,
                                              int boxes_num,
                                              float nms_overlap_thresh);
 
-// void iou3d_boxes_overlap_bev_forward_cuda(const int num_a, const Tensor boxes_a,
-//                                           const int num_b, const Tensor boxes_b,
-//                                           Tensor ans_overlap) {
-//   IoU3DBoxesOverlapBevForwardCUDAKernelLauncher(num_a, boxes_a, num_b, boxes_b,
-//                                                 ans_overlap);
-// };
+void iou3d_boxes_overlap_bev_forward_cuda(const int num_a, const Tensor boxes_a,
+                                          const int num_b, const Tensor boxes_b,
+                                          Tensor ans_overlap) {
+  IoU3DBoxesOverlapBevForwardCUDAKernelLauncher(num_a, boxes_a, num_b, boxes_b,
+                                                ans_overlap);
+};
 
 void iou3d_boxes_iou_bev_forward_cuda(const int num_a, const Tensor boxes_a,
                                       const int num_b, const Tensor boxes_b,
@@ -678,9 +610,9 @@ void iou3d_nms_normal_forward_cuda(const Tensor boxes, unsigned long long* mask,
                                           nms_overlap_thresh);
 };
 
-// void iou3d_boxes_overlap_bev_forward_impl(const int num_a, const Tensor boxes_a,
-//                                           const int num_b, const Tensor boxes_b,
-//                                           Tensor ans_overlap);
+void iou3d_boxes_overlap_bev_forward_impl(const int num_a, const Tensor boxes_a,
+                                          const int num_b, const Tensor boxes_b,
+                                          Tensor ans_overlap);
 
 void iou3d_boxes_iou_bev_forward_impl(const int num_a, const Tensor boxes_a,
                                       const int num_b, const Tensor boxes_b,
@@ -692,8 +624,8 @@ void iou3d_nms_forward_impl(const Tensor boxes, unsigned long long* mask,
 void iou3d_nms_normal_forward_impl(const Tensor boxes, unsigned long long* mask,
                                    int boxes_num, float nms_overlap_thresh);
 
-// REGISTER_DEVICE_IMPL(iou3d_boxes_overlap_bev_forward_impl, PrivateUse1,
-//                      iou3d_boxes_overlap_bev_forward_cuda);
+REGISTER_DEVICE_IMPL(iou3d_boxes_overlap_bev_forward_impl, PrivateUse1,
+                     iou3d_boxes_overlap_bev_forward_cuda);
 REGISTER_DEVICE_IMPL(iou3d_boxes_iou_bev_forward_impl, PrivateUse1,
                      iou3d_boxes_iou_bev_forward_cuda);
 REGISTER_DEVICE_IMPL(iou3d_nms_forward_impl, PrivateUse1, iou3d_nms_forward_cuda);
@@ -816,14 +748,20 @@ REGISTER_DEVICE_IMPL(modulated_deformable_col2im_impl, PrivateUse1,
 REGISTER_DEVICE_IMPL(modulated_deformable_col2im_coord_impl, PrivateUse1,
                      modulated_deformable_col2im_coord_cuda);
 
-Tensor ms_deform_attn_cuda_forward(const Tensor& value,
+Tensor ms_deform_attn_musa_forward(const Tensor& value,
                                    const Tensor& spatial_shapes,
                                    const Tensor& level_start_index,
                                    const Tensor& sampling_loc,
                                    const Tensor& attn_weight,
                                    const int im2col_step);
 
-void ms_deform_attn_cuda_backward(
+Tensor sca_ms_deform_attn_scatter_div_musa_forward(
+    const Tensor &value, const Tensor &spatial_shapes,
+    const Tensor &level_start_index, const Tensor &sampling_loc,
+    const Tensor &attn_weight, const std::vector<Tensor> &indexes,
+    const Tensor &count, const int num_query);
+
+void ms_deform_attn_musa_backward(
     const Tensor& value, const Tensor& spatial_shapes,
     const Tensor& level_start_index, const Tensor& sampling_loc,
     const Tensor& attn_weight, const Tensor& grad_output, Tensor& grad_value,
@@ -836,6 +774,12 @@ Tensor ms_deform_attn_impl_forward(const Tensor& value,
                                    const Tensor& attn_weight,
                                    const int im2col_step);
 
+Tensor sca_ms_deform_attn_scatter_div_impl_forward(
+    const Tensor &value, const Tensor &spatial_shapes,
+    const Tensor &level_start_index, const Tensor &sampling_loc,
+    const Tensor &attn_weight, const std::vector<Tensor> &indexes,
+    const Tensor &count, const int num_query);
+
 void ms_deform_attn_impl_backward(
     const Tensor& value, const Tensor& spatial_shapes,
     const Tensor& level_start_index, const Tensor& sampling_loc,
@@ -843,9 +787,11 @@ void ms_deform_attn_impl_backward(
     Tensor& grad_sampling_loc, Tensor& grad_attn_weight, const int im2col_step);
 
 REGISTER_DEVICE_IMPL(ms_deform_attn_impl_forward, PrivateUse1,
-                     ms_deform_attn_cuda_forward);
+                     ms_deform_attn_musa_forward);
+REGISTER_DEVICE_IMPL(sca_ms_deform_attn_scatter_div_impl_forward, PrivateUse1,
+                     sca_ms_deform_attn_scatter_div_musa_forward);
 REGISTER_DEVICE_IMPL(ms_deform_attn_impl_backward, PrivateUse1,
-                     ms_deform_attn_cuda_backward);
+                     ms_deform_attn_musa_backward);
 
 Tensor NMSCUDAKernelLauncher(Tensor boxes, Tensor scores, float iou_threshold,
                              int offset);

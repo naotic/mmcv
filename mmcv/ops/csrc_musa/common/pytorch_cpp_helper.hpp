@@ -12,9 +12,7 @@ using namespace at;
   TORCH_CHECK(x.device().is_privateuseone(), #x " must be a CUDA tensor")
 #define CHECK_CPU(x) \
   TORCH_CHECK(!x.device().is_privateuseone(), #x " must be a CPU tensor")
-#define CHECK_MUSA(x) \
-  TORCH_CHECK(x.device().is_privateuseone(), #x " must be a MUSA tensor")
-  #define CHECK_CONTIGUOUS(x) \
+#define CHECK_CONTIGUOUS(x) \
   TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
 #define CHECK_CUDA_INPUT(x) \
   CHECK_CUDA(x);            \

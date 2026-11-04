@@ -1,8 +1,7 @@
 addict
-numpy==1.23.5
+numpy
 packaging
 Pillow
 pyyaml
 regex;sys_platform=='win32'
-yapf==0.32.0
-opencv-python==3.4.18.65
+yapf

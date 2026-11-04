@@ -23,6 +23,17 @@ Tensor ms_deform_attn_impl_forward(const Tensor &value,
                               attn_weight, im2col_step);
 }
 
+Tensor sca_ms_deform_attn_scatter_div_impl_forward(
+    const Tensor &value, const Tensor &spatial_shapes,
+    const Tensor &level_start_index, const Tensor &sampling_loc,
+    const Tensor &attn_weight, const std::vector<Tensor> &indexes,
+    const Tensor &count, const int num_query) {
+  return DISPATCH_DEVICE_IMPL(sca_ms_deform_attn_scatter_div_impl_forward,
+                              value, spatial_shapes, level_start_index,
+                              sampling_loc, attn_weight, indexes, count,
+                              num_query);
+}
+
 void ms_deform_attn_impl_backward(
     const Tensor &value, const Tensor &spatial_shapes,
     const Tensor &level_start_index, const Tensor &sampling_loc,
@@ -43,6 +54,17 @@ Tensor ms_deform_attn_forward(const Tensor &value, const Tensor &spatial_shapes,
   at::DeviceGuard guard(value.device());
   return ms_deform_attn_impl_forward(value, spatial_shapes, level_start_index,
                                      sampling_loc, attn_weight, im2col_step);
+}
+
+Tensor sca_ms_deform_attn_scatter_div_forward(
+    const Tensor &value, const Tensor &spatial_shapes,
+    const Tensor &level_start_index, const Tensor &sampling_loc,
+    const Tensor &attn_weight, const std::vector<Tensor> &indexes,
+    const Tensor &count, const int num_query) {
+  at::DeviceGuard guard(value.device());
+  return sca_ms_deform_attn_scatter_div_impl_forward(
+      value, spatial_shapes, level_start_index, sampling_loc, attn_weight,
+      indexes, count, num_query);
 }
 
 void ms_deform_attn_backward(const Tensor &value, const Tensor &spatial_shapes,

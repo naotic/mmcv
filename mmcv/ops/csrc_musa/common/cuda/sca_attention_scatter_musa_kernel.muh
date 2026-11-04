@@ -1,0 +1,358 @@
+// Copyright (c) OpenMMLab. All rights reserved.
+#ifndef SCA_ATTENTION_SCATTER_MUSA_KERNEL_MUH
+#define SCA_ATTENTION_SCATTER_MUSA_KERNEL_MUH
+
+#include "pytorch_cuda_helper.hpp"
+
+__device__ __forceinline__ float4 sca_add_float4(const float4 a,
+                                                 const float4 b) {
+  return make_float4(a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w);
+}
+
+__device__ __forceinline__ float4 sca_mul_float4(const float4 a,
+                                                 const float scale) {
+  return make_float4(a.x * scale, a.y * scale, a.z * scale, a.w * scale);
+}
+
+template <typename T>
+__global__ void sca_attention_scatter_forward_musa_kernel(
+    const int bs, const int num_cams, const int max_len, const int num_query,
+    const int channels, const int valid_len, const int cam_id,
+    const T *__restrict__ queries, const int64_t *__restrict__ index,
+    T *__restrict__ slots) {
+  CUDA_1D_KERNEL_LOOP(linear_idx, bs * valid_len * channels) {
+    const int c = linear_idx % channels;
+    const int query_idx = (linear_idx / channels) % valid_len;
+    const int batch_id = linear_idx / (channels * valid_len);
+    const int bev_idx = index[query_idx];
+    const int query_offset =
+        ((batch_id * num_cams + cam_id) * max_len + query_idx) * channels + c;
+    const int slot_offset = (batch_id * num_query + bev_idx) * channels + c;
+    slots[slot_offset] += queries[query_offset];
+  }
+}
+
+template <typename T>
+__global__ void sca_attention_scatter_div_forward_musa_kernel(
+    const int bs, const int num_cams, const int max_len, const int num_query,
+    const int channels, const int valid_len, const int cam_id,
+    const T *__restrict__ queries, const int64_t *__restrict__ index,
+    const T *__restrict__ count, T *__restrict__ slots) {
+  CUDA_1D_KERNEL_LOOP(linear_idx, bs * valid_len * channels) {
+    const int c = linear_idx % channels;
+    const int query_idx = (linear_idx / channels) % valid_len;
+    const int batch_id = linear_idx / (channels * valid_len);
+    const int bev_idx = index[query_idx];
+    const int query_offset =
+        ((batch_id * num_cams + cam_id) * max_len + query_idx) * channels + c;
+    const int slot_offset = (batch_id * num_query + bev_idx) * channels + c;
+    const T inv_count = static_cast<T>(1) / count[batch_id * num_query + bev_idx];
+    slots[slot_offset] += queries[query_offset] * inv_count;
+  }
+}
+
+__global__ void sca_attention_scatter_forward_float4_musa_kernel(
+    const int bs, const int num_cams, const int max_len, const int num_query,
+    const int channels4, const int valid_len, const int cam_id,
+    const float4 *__restrict__ queries, const int64_t *__restrict__ index,
+    float4 *__restrict__ slots) {
+  CUDA_1D_KERNEL_LOOP(linear_idx, bs * valid_len * channels4) {
+    const int c4 = linear_idx % channels4;
+    const int query_idx = (linear_idx / channels4) % valid_len;
+    const int batch_id = linear_idx / (channels4 * valid_len);
+    const int bev_idx = index[query_idx];
+    const int query_offset =
+        ((batch_id * num_cams + cam_id) * max_len + query_idx) * channels4 +
+        c4;
+    const int slot_offset =
+        (batch_id * num_query + bev_idx) * channels4 + c4;
+    slots[slot_offset] = sca_add_float4(slots[slot_offset],
+                                        queries[query_offset]);
+  }
+}
+
+__global__ void sca_attention_scatter_div_forward_float4_musa_kernel(
+    const int bs, const int num_cams, const int max_len, const int num_query,
+    const int channels4, const int valid_len, const int cam_id,
+    const float4 *__restrict__ queries, const int64_t *__restrict__ index,
+    const float *__restrict__ count, float4 *__restrict__ slots) {
+  CUDA_1D_KERNEL_LOOP(linear_idx, bs * valid_len * channels4) {
+    const int c4 = linear_idx % channels4;
+    const int query_idx = (linear_idx / channels4) % valid_len;
+    const int batch_id = linear_idx / (channels4 * valid_len);
+    const int bev_idx = index[query_idx];
+    const int query_offset =
+        ((batch_id * num_cams + cam_id) * max_len + query_idx) * channels4 +
+        c4;
+    const int slot_offset =
+        (batch_id * num_query + bev_idx) * channels4 + c4;
+    const float inv_count = 1.0f / count[batch_id * num_query + bev_idx];
+    slots[slot_offset] = sca_add_float4(
+        slots[slot_offset], sca_mul_float4(queries[query_offset], inv_count));
+  }
+}
+
+template <typename T>
+__global__ void sca_attention_scatter_backward_musa_kernel(
+    const int bs, const int num_cams, const int max_len, const int num_query,
+    const int channels, const int valid_len, const int cam_id,
+    const T *__restrict__ grad_slots, const int64_t *__restrict__ index,
+    T *__restrict__ grad_queries) {
+  CUDA_1D_KERNEL_LOOP(linear_idx, bs * valid_len * channels) {
+    const int c = linear_idx % channels;
+    const int query_idx = (linear_idx / channels) % valid_len;
+    const int batch_id = linear_idx / (channels * valid_len);
+    const int bev_idx = index[query_idx];
+    const int slot_offset = (batch_id * num_query + bev_idx) * channels + c;
+    const int query_offset =
+        ((batch_id * num_cams + cam_id) * max_len + query_idx) * channels + c;
+    grad_queries[query_offset] = grad_slots[slot_offset];
+  }
+}
+
+template <typename T>
+__global__ void sca_attention_scatter_div_backward_musa_kernel(
+    const int bs, const int num_cams, const int max_len, const int num_query,
+    const int channels, const int valid_len, const int cam_id,
+    const T *__restrict__ grad_slots, const int64_t *__restrict__ index,
+    const T *__restrict__ count, T *__restrict__ grad_queries) {
+  CUDA_1D_KERNEL_LOOP(linear_idx, bs * valid_len * channels) {
+    const int c = linear_idx % channels;
+    const int query_idx = (linear_idx / channels) % valid_len;
+    const int batch_id = linear_idx / (channels * valid_len);
+    const int bev_idx = index[query_idx];
+    const int slot_offset = (batch_id * num_query + bev_idx) * channels + c;
+    const int query_offset =
+        ((batch_id * num_cams + cam_id) * max_len + query_idx) * channels + c;
+    const T inv_count = static_cast<T>(1) / count[batch_id * num_query + bev_idx];
+    grad_queries[query_offset] = grad_slots[slot_offset] * inv_count;
+  }
+}
+
+__global__ void sca_attention_scatter_backward_float4_musa_kernel(
+    const int bs, const int num_cams, const int max_len, const int num_query,
+    const int channels4, const int valid_len, const int cam_id,
+    const float4 *__restrict__ grad_slots, const int64_t *__restrict__ index,
+    float4 *__restrict__ grad_queries) {
+  CUDA_1D_KERNEL_LOOP(linear_idx, bs * valid_len * channels4) {
+    const int c4 = linear_idx % channels4;
+    const int query_idx = (linear_idx / channels4) % valid_len;
+    const int batch_id = linear_idx / (channels4 * valid_len);
+    const int bev_idx = index[query_idx];
+    const int slot_offset =
+        (batch_id * num_query + bev_idx) * channels4 + c4;
+    const int query_offset =
+        ((batch_id * num_cams + cam_id) * max_len + query_idx) * channels4 +
+        c4;
+    grad_queries[query_offset] = grad_slots[slot_offset];
+  }
+}
+
+__global__ void sca_attention_scatter_div_backward_float4_musa_kernel(
+    const int bs, const int num_cams, const int max_len, const int num_query,
+    const int channels4, const int valid_len, const int cam_id,
+    const float4 *__restrict__ grad_slots, const int64_t *__restrict__ index,
+    const float *__restrict__ count, float4 *__restrict__ grad_queries) {
+  CUDA_1D_KERNEL_LOOP(linear_idx, bs * valid_len * channels4) {
+    const int c4 = linear_idx % channels4;
+    const int query_idx = (linear_idx / channels4) % valid_len;
+    const int batch_id = linear_idx / (channels4 * valid_len);
+    const int bev_idx = index[query_idx];
+    const int slot_offset =
+        (batch_id * num_query + bev_idx) * channels4 + c4;
+    const int query_offset =
+        ((batch_id * num_cams + cam_id) * max_len + query_idx) * channels4 +
+        c4;
+    const float inv_count = 1.0f / count[batch_id * num_query + bev_idx];
+    grad_queries[query_offset] =
+        sca_mul_float4(grad_slots[slot_offset], inv_count);
+  }
+}
+
+template <typename T>
+__global__ void sca_query_gather_forward_musa_kernel(
+    const int bs, const int num_cams, const int num_query, const int max_len,
+    const int channels, const int valid_len, const int cam_id,
+    const T *__restrict__ query, const int64_t *__restrict__ index,
+    T *__restrict__ queries_rebatch) {
+  CUDA_1D_KERNEL_LOOP(linear_idx, bs * valid_len * channels) {
+    const int c = linear_idx % channels;
+    const int rebatch_idx = (linear_idx / channels) % valid_len;
+    const int batch_id = linear_idx / (channels * valid_len);
+    const int query_idx = index[rebatch_idx];
+    const int query_offset = (batch_id * num_query + query_idx) * channels + c;
+    const int output_offset =
+        ((batch_id * num_cams + cam_id) * max_len + rebatch_idx) * channels + c;
+    queries_rebatch[output_offset] = query[query_offset];
+  }
+}
+
+__global__ void sca_query_gather_forward_float4_musa_kernel(
+    const int bs, const int num_cams, const int num_query, const int max_len,
+    const int channels4, const int valid_len, const int cam_id,
+    const float4 *__restrict__ query, const int64_t *__restrict__ index,
+    float4 *__restrict__ queries_rebatch) {
+  CUDA_1D_KERNEL_LOOP(linear_idx, bs * valid_len * channels4) {
+    const int c4 = linear_idx % channels4;
+    const int rebatch_idx = (linear_idx / channels4) % valid_len;
+    const int batch_id = linear_idx / (channels4 * valid_len);
+    const int query_idx = index[rebatch_idx];
+    const int query_offset =
+        (batch_id * num_query + query_idx) * channels4 + c4;
+    const int output_offset =
+        ((batch_id * num_cams + cam_id) * max_len + rebatch_idx) * channels4 +
+        c4;
+    queries_rebatch[output_offset] = query[query_offset];
+  }
+}
+
+__global__ void sca_query_reference_gather_forward_float4_musa_kernel(
+    const int bs, const int num_cams, const int num_query, const int max_len,
+    const int channels4, const int depth2_4, const int valid_len,
+    const int cam_id, const float4 *__restrict__ query,
+    const float4 *__restrict__ reference_points_cam,
+    const int64_t *__restrict__ index, float4 *__restrict__ queries_rebatch,
+    float4 *__restrict__ reference_points_rebatch) {
+  CUDA_1D_KERNEL_LOOP(linear_idx, bs * valid_len * channels4) {
+    const int c4 = linear_idx % channels4;
+    const int rebatch_idx = (linear_idx / channels4) % valid_len;
+    const int batch_id = linear_idx / (channels4 * valid_len);
+    const int query_idx = index[rebatch_idx];
+    const int query_offset =
+        (batch_id * num_query + query_idx) * channels4 + c4;
+    const int output_offset =
+        ((batch_id * num_cams + cam_id) * max_len + rebatch_idx) * channels4 +
+        c4;
+    queries_rebatch[output_offset] = query[query_offset];
+
+    if (c4 < depth2_4) {
+      const int reference_input_offset =
+          ((cam_id * bs + batch_id) * num_query + query_idx) * depth2_4 + c4;
+      const int reference_output_offset =
+          ((batch_id * num_cams + cam_id) * max_len + rebatch_idx) * depth2_4 +
+          c4;
+      reference_points_rebatch[reference_output_offset] =
+          reference_points_cam[reference_input_offset];
+    }
+  }
+}
+
+template <typename T>
+__global__ void sca_query_reference_gather_forward_musa_kernel(
+    const int bs, const int num_cams, const int num_query, const int max_len,
+    const int channels, const int depth2, const int valid_len, const int cam_id,
+    const T *__restrict__ query, const T *__restrict__ reference_points_cam,
+    const int64_t *__restrict__ index, T *__restrict__ queries_rebatch,
+    T *__restrict__ reference_points_rebatch) {
+  const int stride = channels > depth2 ? channels : depth2;
+  CUDA_1D_KERNEL_LOOP(linear_idx, bs * valid_len * stride) {
+    const int c = linear_idx % stride;
+    const int rebatch_idx = (linear_idx / stride) % valid_len;
+    const int batch_id = linear_idx / (stride * valid_len);
+    const int query_idx = index[rebatch_idx];
+
+    if (c < channels) {
+      const int query_offset =
+          (batch_id * num_query + query_idx) * channels + c;
+      const int output_offset =
+          ((batch_id * num_cams + cam_id) * max_len + rebatch_idx) * channels +
+          c;
+      queries_rebatch[output_offset] = query[query_offset];
+    }
+
+    if (c < depth2) {
+      const int reference_input_offset =
+          ((cam_id * bs + batch_id) * num_query + query_idx) * depth2 + c;
+      const int reference_output_offset =
+          ((batch_id * num_cams + cam_id) * max_len + rebatch_idx) * depth2 +
+          c;
+      reference_points_rebatch[reference_output_offset] =
+          reference_points_cam[reference_input_offset];
+    }
+  }
+}
+
+template <typename T>
+__global__ void sca_query_gather_backward_musa_kernel(
+    const int bs, const int num_cams, const int num_query, const int max_len,
+    const int channels, const int valid_len, const int cam_id,
+    const T *__restrict__ grad_queries_rebatch,
+    const int64_t *__restrict__ index, T *__restrict__ grad_query) {
+  CUDA_1D_KERNEL_LOOP(linear_idx, bs * valid_len * channels) {
+    const int c = linear_idx % channels;
+    const int rebatch_idx = (linear_idx / channels) % valid_len;
+    const int batch_id = linear_idx / (channels * valid_len);
+    const int query_idx = index[rebatch_idx];
+    const int input_offset =
+        ((batch_id * num_cams + cam_id) * max_len + rebatch_idx) * channels + c;
+    const int grad_query_offset =
+        (batch_id * num_query + query_idx) * channels + c;
+    atomicAdd(grad_query + grad_query_offset,
+              grad_queries_rebatch[input_offset]);
+  }
+}
+
+template <typename T>
+__global__ void sca_reference_gather_backward_musa_kernel(
+    const int bs, const int num_cams, const int num_query, const int max_len,
+    const int depth2, const int valid_len, const int cam_id,
+    const T *__restrict__ grad_reference_points_rebatch,
+    const int64_t *__restrict__ index,
+    T *__restrict__ grad_reference_points_cam) {
+  CUDA_1D_KERNEL_LOOP(linear_idx, bs * valid_len * depth2) {
+    const int c = linear_idx % depth2;
+    const int rebatch_idx = (linear_idx / depth2) % valid_len;
+    const int batch_id = linear_idx / (depth2 * valid_len);
+    const int query_idx = index[rebatch_idx];
+    const int input_offset =
+        ((batch_id * num_cams + cam_id) * max_len + rebatch_idx) * depth2 + c;
+    const int output_offset =
+        ((cam_id * bs + batch_id) * num_query + query_idx) * depth2 + c;
+    grad_reference_points_cam[output_offset] =
+        grad_reference_points_rebatch[input_offset];
+  }
+}
+
+__global__ void sca_reference_gather_backward_float4_musa_kernel(
+    const int bs, const int num_cams, const int num_query, const int max_len,
+    const int depth2_4, const int valid_len, const int cam_id,
+    const float4 *__restrict__ grad_reference_points_rebatch,
+    const int64_t *__restrict__ index,
+    float4 *__restrict__ grad_reference_points_cam) {
+  CUDA_1D_KERNEL_LOOP(linear_idx, bs * valid_len * depth2_4) {
+    const int c4 = linear_idx % depth2_4;
+    const int rebatch_idx = (linear_idx / depth2_4) % valid_len;
+    const int batch_id = linear_idx / (depth2_4 * valid_len);
+    const int query_idx = index[rebatch_idx];
+    const int input_offset =
+        ((batch_id * num_cams + cam_id) * max_len + rebatch_idx) * depth2_4 +
+        c4;
+    const int output_offset =
+        ((cam_id * bs + batch_id) * num_query + query_idx) * depth2_4 + c4;
+    grad_reference_points_cam[output_offset] =
+        grad_reference_points_rebatch[input_offset];
+  }
+}
+
+__global__ void sca_query_gather_backward_float4_musa_kernel(
+    const int bs, const int num_cams, const int num_query, const int max_len,
+    const int channels4, const int valid_len, const int cam_id,
+    const float4 *__restrict__ grad_queries_rebatch,
+    const int64_t *__restrict__ index, float4 *__restrict__ grad_query) {
+  CUDA_1D_KERNEL_LOOP(linear_idx, bs * valid_len * channels4) {
+    const int c4 = linear_idx % channels4;
+    const int rebatch_idx = (linear_idx / channels4) % valid_len;
+    const int batch_id = linear_idx / (channels4 * valid_len);
+    const int query_idx = index[rebatch_idx];
+    const int input_offset =
+        ((batch_id * num_cams + cam_id) * max_len + rebatch_idx) * channels4 +
+        c4;
+    const int grad_query_offset =
+        (batch_id * num_query + query_idx) * channels4 + c4;
+    grad_query[grad_query_offset] =
+        sca_add_float4(grad_query[grad_query_offset],
+                       grad_queries_rebatch[input_offset]);
+  }
+}
+
+#endif  // SCA_ATTENTION_SCATTER_MUSA_KERNEL_MUH

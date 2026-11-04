@@ -113,16 +113,6 @@ void bbox_overlaps(const Tensor bboxes1, const Tensor bboxes2, Tensor ious,
 
 void knn_forward(Tensor xyz_tensor, Tensor new_xyz_tensor, Tensor idx_tensor,
                  Tensor dist2_tensor, int b, int n, int m, int nsample);
-
-void iou3d_boxes_overlap_bev_forward(Tensor boxes_a, Tensor boxes_b,
-                                     Tensor ans_overlap);
-
-void iou3d_nms3d_forward(Tensor boxes, Tensor keep, Tensor keep_num,
-                         float nms_overlap_thresh);
-
-void iou3d_nms3d_normal_forward(Tensor boxes, Tensor keep, Tensor keep_num,
-                                float nms_overlap_thresh);
-
 void iou3d_boxes_overlap_bev_forward(Tensor boxes_a, Tensor boxes_b,
                                      Tensor ans_overlap);
 
@@ -172,6 +162,12 @@ Tensor ms_deform_attn_forward(const Tensor &value, const Tensor &spatial_shapes,
                               const Tensor &sampling_loc,
                               const Tensor &attn_weight, const int im2col_step);
 
+Tensor sca_ms_deform_attn_scatter_div_forward(
+    const Tensor &value, const Tensor &spatial_shapes,
+    const Tensor &level_start_index, const Tensor &sampling_loc,
+    const Tensor &attn_weight, const std::vector<Tensor> &indexes,
+    const Tensor &count, const int num_query);
+
 void ms_deform_attn_backward(const Tensor &value, const Tensor &spatial_shapes,
                              const Tensor &level_start_index,
                              const Tensor &sampling_loc,
@@ -180,6 +176,42 @@ void ms_deform_attn_backward(const Tensor &value, const Tensor &spatial_shapes,
                              Tensor &grad_sampling_loc,
                              Tensor &grad_attn_weight, const int im2col_step);
 
+Tensor sca_attention_scatter_forward(const Tensor &queries,
+                                     const std::vector<Tensor> &indexes,
+                                     const int num_query);
+
+Tensor sca_attention_scatter_backward(const Tensor &grad_slots,
+                                      const std::vector<Tensor> &indexes,
+                                      const int num_cams, const int max_len);
+
+Tensor sca_attention_scatter_div_forward(const Tensor &queries,
+                                         const std::vector<Tensor> &indexes,
+                                         const Tensor &count,
+                                         const int num_query);
+
+Tensor sca_attention_scatter_div_backward(const Tensor &grad_slots,
+                                          const std::vector<Tensor> &indexes,
+                                          const Tensor &count,
+                                          const int num_cams,
+                                          const int max_len);
+
+Tensor sca_query_gather_forward(const Tensor &query,
+                                const std::vector<Tensor> &indexes,
+                                const int num_cams, const int max_len);
+
+Tensor sca_query_gather_backward(const Tensor &grad_queries_rebatch,
+                                 const std::vector<Tensor> &indexes,
+                                 const int num_query);
+
+std::vector<Tensor> sca_query_reference_gather_forward(
+    const Tensor &query, const Tensor &reference_points_cam,
+    const std::vector<Tensor> &indexes, const int num_cams,
+    const int max_len);
+
+Tensor sca_reference_gather_backward(
+    const Tensor &grad_reference_points_rebatch,
+    const std::vector<Tensor> &indexes, const int num_query);
+    
 Tensor nms(Tensor boxes, Tensor scores, float iou_threshold, int offset);
 
 Tensor softnms(Tensor boxes, Tensor scores, Tensor dets, float iou_threshold,
@@ -350,10 +382,6 @@ void correlation_backward(Tensor grad_output, Tensor input1, Tensor input2,
                           int dilationH, int dilationW, int dilation_patchH,
                           int dilation_patchW, int dH, int dW);
 
-at::Tensor diff_iou_rotated_sort_vertices_forward(at::Tensor vertices,
-                                                  at::Tensor mask,
-                                                  at::Tensor num_valid);
-
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("upfirdn2d", &upfirdn2d, "upfirdn2d (CUDA)", py::arg("input"),
         py::arg("kernel"), py::arg("up_x"), py::arg("up_y"), py::arg("down_x"),
@@ -389,15 +417,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("new_xyz_tensor"), py::arg("idx_tensor"),
         py::arg("dist2_tensor"), py::arg("b"), py::arg("n"), py::arg("m"),
         py::arg("nsample"));
-  m.def("iou3d_boxes_overlap_bev_forward", &iou3d_boxes_overlap_bev_forward,
-        "iou3d_boxes_overlap_bev_forward", py::arg("boxes_a"),
-        py::arg("boxes_b"), py::arg("ans_iou"));
-  m.def("iou3d_nms3d_forward", &iou3d_nms3d_forward, "iou3d_nms3d_forward",
-        py::arg("boxes"), py::arg("keep"), py::arg("num_out"),
-        py::arg("nms_overlap_thresh"));
-  m.def("iou3d_nms3d_normal_forward", &iou3d_nms3d_normal_forward,
-        "iou3d_nms3d_normal_forward", py::arg("boxes"), py::arg("keep"),
-        py::arg("num_out"), py::arg("nms_overlap_thresh"));
   m.def("carafe_naive_forward", &carafe_naive_forward, "carafe_naive_forward",
         py::arg("features"), py::arg("masks"), py::arg("output"),
         py::arg("kernel_size"), py::arg("group_size"), py::arg("scale_factor"));
@@ -665,6 +684,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("value"), py::arg("value_spatial_shapes"),
         py::arg("value_level_start_index"), py::arg("sampling_locations"),
         py::arg("attention_weights"), py::arg("im2col_step"));
+  m.def("sca_ms_deform_attn_scatter_div_forward",
+        &sca_ms_deform_attn_scatter_div_forward,
+        "forward function of SCA fused ms_deform_attn scatter/div",
+        py::arg("value"), py::arg("value_spatial_shapes"),
+        py::arg("value_level_start_index"), py::arg("sampling_locations"),
+        py::arg("attention_weights"), py::arg("indexes"), py::arg("count"),
+        py::arg("num_query"));
   m.def("ms_deform_attn_backward", &ms_deform_attn_backward,
         "backward function of multi-scale deformable attention",
         py::arg("value"), py::arg("value_spatial_shapes"),
@@ -672,6 +698,38 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("attention_weights"), py::arg("grad_output"),
         py::arg("grad_value"), py::arg("grad_sampling_loc"),
         py::arg("grad_attn_weight"), py::arg("im2col_step"));
+  m.def("sca_attention_scatter_forward", &sca_attention_scatter_forward,
+        "forward function of SCA attention scatter", py::arg("queries"),
+        py::arg("indexes"), py::arg("num_query"));
+  m.def("sca_attention_scatter_backward", &sca_attention_scatter_backward,
+        "backward function of SCA attention scatter", py::arg("grad_slots"),
+        py::arg("indexes"), py::arg("num_cams"), py::arg("max_len"));
+  m.def("sca_attention_scatter_div_forward",
+        &sca_attention_scatter_div_forward,
+        "forward function of normalized SCA attention scatter",
+        py::arg("queries"), py::arg("indexes"), py::arg("count"),
+        py::arg("num_query"));
+  m.def("sca_attention_scatter_div_backward",
+        &sca_attention_scatter_div_backward,
+        "backward function of normalized SCA attention scatter",
+        py::arg("grad_slots"), py::arg("indexes"), py::arg("count"),
+        py::arg("num_cams"), py::arg("max_len"));
+  m.def("sca_query_gather_forward", &sca_query_gather_forward,
+        "forward function of SCA query gather", py::arg("query"),
+        py::arg("indexes"), py::arg("num_cams"), py::arg("max_len"));
+  m.def("sca_query_gather_backward", &sca_query_gather_backward,
+        "backward function of SCA query gather",
+        py::arg("grad_queries_rebatch"), py::arg("indexes"),
+        py::arg("num_query"));
+  m.def("sca_query_reference_gather_forward",
+        &sca_query_reference_gather_forward,
+        "forward function of fused SCA query/reference gather",
+        py::arg("query"), py::arg("reference_points_cam"),
+        py::arg("indexes"), py::arg("num_cams"), py::arg("max_len"));
+  m.def("sca_reference_gather_backward", &sca_reference_gather_backward,
+        "backward function of SCA reference gather",
+        py::arg("grad_reference_points_rebatch"), py::arg("indexes"),
+        py::arg("num_query"));
   m.def("border_align_forward", &border_align_forward,
         "forward function of border_align", py::arg("input"), py::arg("boxes"),
         py::arg("output"), py::arg("argmax_idx"), py::arg("pool_size"));
@@ -709,8 +767,4 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "roiaware_pool3d_backward", py::arg("pts_idx_of_voxels"),
         py::arg("argmax"), py::arg("grad_out"), py::arg("grad_in"),
         py::arg("pool_method"));
-  m.def("diff_iou_rotated_sort_vertices_forward",
-        &diff_iou_rotated_sort_vertices_forward,
-        "diff_iou_rotated_sort_vertices_forward", py::arg("vertices"),
-        py::arg("mask"), py::arg("num_valid"));
 }
