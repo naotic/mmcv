@@ -29,9 +29,9 @@ Tensor bottom_pool_backward(Tensor input, Tensor grad_output) {
   int32_t width = input.size(3);
 
   auto max_val = torch::zeros({batch, channel, width},
-                              at::device(at::kCUDA).dtype(at::kFloat));
+                              input.options().dtype(at::kFloat));
   auto max_ind = torch::zeros({batch, channel, width},
-                              at::device(at::kCUDA).dtype(at::kLong));
+                              input.options().dtype(at::kLong));
 
   auto input_temp = input.select(2, 0);
   max_val.copy_(input_temp);
@@ -44,9 +44,9 @@ Tensor bottom_pool_backward(Tensor input, Tensor grad_output) {
 
   auto un_max_ind = max_ind.unsqueeze(2);
   auto gt_mask = torch::zeros({batch, channel, width},
-                              at::device(at::kCUDA).dtype(at::kBool));
+                              input.options().dtype(at::kBool));
   auto max_temp = torch::zeros({batch, channel, width},
-                               at::device(at::kCUDA).dtype(at::kFloat));
+                               input.options().dtype(at::kFloat));
   for (int32_t ind = 0; ind < height - 1; ++ind) {
     input_temp = input.select(2, ind + 1);
     at::gt_out(gt_mask, input_temp, max_val);
@@ -88,9 +88,9 @@ Tensor left_pool_backward(Tensor input, Tensor grad_output) {
   int32_t width = input.size(3);
 
   auto max_val = torch::zeros({batch, channel, height},
-                              at::device(at::kCUDA).dtype(at::kFloat));
+                              input.options().dtype(at::kFloat));
   auto max_ind = torch::zeros({batch, channel, height},
-                              at::device(at::kCUDA).dtype(at::kLong));
+                              input.options().dtype(at::kLong));
 
   auto input_temp = input.select(3, width - 1);
   max_val.copy_(input_temp);
@@ -103,9 +103,9 @@ Tensor left_pool_backward(Tensor input, Tensor grad_output) {
 
   auto un_max_ind = max_ind.unsqueeze(3);
   auto gt_mask = torch::zeros({batch, channel, height},
-                              at::device(at::kCUDA).dtype(at::kBool));
+                              input.options().dtype(at::kBool));
   auto max_temp = torch::zeros({batch, channel, height},
-                               at::device(at::kCUDA).dtype(at::kFloat));
+                               input.options().dtype(at::kFloat));
   for (int32_t ind = 1; ind < width; ++ind) {
     input_temp = input.select(3, width - ind - 1);
     at::gt_out(gt_mask, input_temp, max_val);
@@ -147,9 +147,9 @@ Tensor right_pool_backward(Tensor input, Tensor grad_output) {
   int32_t width = input.size(3);
 
   auto max_val = torch::zeros({batch, channel, height},
-                              at::device(at::kCUDA).dtype(at::kFloat));
+                              input.options().dtype(at::kFloat));
   auto max_ind = torch::zeros({batch, channel, height},
-                              at::device(at::kCUDA).dtype(at::kLong));
+                              input.options().dtype(at::kLong));
 
   auto input_temp = input.select(3, 0);
   max_val.copy_(input_temp);
@@ -162,9 +162,9 @@ Tensor right_pool_backward(Tensor input, Tensor grad_output) {
 
   auto un_max_ind = max_ind.unsqueeze(3);
   auto gt_mask = torch::zeros({batch, channel, height},
-                              at::device(at::kCUDA).dtype(at::kBool));
+                              input.options().dtype(at::kBool));
   auto max_temp = torch::zeros({batch, channel, height},
-                               at::device(at::kCUDA).dtype(at::kFloat));
+                               input.options().dtype(at::kFloat));
   for (int32_t ind = 0; ind < width - 1; ++ind) {
     input_temp = input.select(3, ind + 1);
     at::gt_out(gt_mask, input_temp, max_val);
@@ -206,9 +206,9 @@ Tensor top_pool_backward(Tensor input, Tensor grad_output) {
   int32_t width = input.size(3);
 
   auto max_val = torch::zeros({batch, channel, width},
-                              at::device(at::kCUDA).dtype(at::kFloat));
+                              input.options().dtype(at::kFloat));
   auto max_ind = torch::zeros({batch, channel, width},
-                              at::device(at::kCUDA).dtype(at::kLong));
+                              input.options().dtype(at::kLong));
 
   auto input_temp = input.select(2, height - 1);
   max_val.copy_(input_temp);
@@ -221,9 +221,9 @@ Tensor top_pool_backward(Tensor input, Tensor grad_output) {
 
   auto un_max_ind = max_ind.unsqueeze(2);
   auto gt_mask = torch::zeros({batch, channel, width},
-                              at::device(at::kCUDA).dtype(at::kBool));
+                              input.options().dtype(at::kBool));
   auto max_temp = torch::zeros({batch, channel, width},
-                               at::device(at::kCUDA).dtype(at::kFloat));
+                               input.options().dtype(at::kFloat));
   for (int32_t ind = 1; ind < height; ++ind) {
     input_temp = input.select(2, height - ind - 1);
     at::gt_out(gt_mask, input_temp, max_val);
